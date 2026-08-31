@@ -1,0 +1,35 @@
+{
+  "name": "openstreetmap-to-3d",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "pnpm build:packages && pnpm --filter @osm3d/api build && pnpm --filter @osm3d/web build",
+    "build:packages": "pnpm --filter @osm3d/contracts build && pnpm --filter @osm3d/geo build && pnpm --filter @osm3d/osm build && pnpm --filter @osm3d/worldgen build && pnpm --filter @osm3d/simulation build",
+    "dev": "pnpm build:packages && pnpm --parallel --filter @osm3d/api --filter @osm3d/web dev",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "pnpm build:packages && pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "db:migrate": "pnpm --filter @osm3d/api db:migrate"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.1",
+    "@types/node": "^24.3.1",
+    "eslint": "10.9.1",
+    "prettier": "^3.6.2",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.5",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.68.0",
+    "vitest": "4.1.11"
+  }
+}

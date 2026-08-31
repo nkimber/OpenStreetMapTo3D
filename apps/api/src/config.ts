@@ -1,0 +1,37 @@
+import { z } from "zod";
+
+const ConfigSchema = z.object({
+  NODE_ENV: z
+    .enum(["development", "test", "production"])
+    .default("development"),
+  DATABASE_URL: z
+    .string()
+    .min(1)
+    .default("postgresql://osm3d:osm3d-local@localhost:5432/osm3d"),
+  API_PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+  PUBLIC_APP_URL: z.url().default("http://localhost:5173"),
+  NOMINATIM_BASE_URL: z.url().default("https://nominatim.openstreetmap.org"),
+  OVERPASS_BASE_URL: z.url().default("https://overpass-api.de/api/interpreter"),
+  OSM_USER_AGENT: z
+    .string()
+    .min(8)
+    .default("OpenStreetMapTo3D/0.1 local-development"),
+  OSM_CACHE_DIRECTORY: z.string().min(1).default(".data/osm"),
+  MAX_IMPORT_AREA_SQUARE_KM: z.coerce.number().positive().default(4),
+  MAX_IMPORT_RESPONSE_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(25_000_000),
+  LOG_LEVEL: z
+    .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
+    .default("info"),
+});
+
+export type AppConfig = z.infer<typeof ConfigSchema>;
+
+export function loadConfig(
+  environment: NodeJS.ProcessEnv = process.env,
+): AppConfig {
+  return ConfigSchema.parse(environment);
+}

@@ -6,6 +6,9 @@ node_modules/
 dist/
 coverage/
 *.tsbuildinfo
+.playwright-cli/
+playwright-report/
+test-results/
 
 # Local configuration and secrets
 .env

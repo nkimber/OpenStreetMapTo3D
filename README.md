@@ -1,9 +1,25 @@
 # OpenStreetMapTo3D
 
 OpenStreetMapTo3D is an open-source application for turning OpenStreetMap
-neighborhood data into an interactive 3D world that can be explored by car.
+neighborhood data into a saved, editable 3D world that can be explored by car.
 
-## Planned stack
+## Run it
+
+Docker Desktop is the only runtime prerequisite:
+
+```powershell
+docker compose up --build
+```
+
+Open [http://localhost:5173](http://localhost:5173). Choose the bundled sample
+for a deterministic import, or search for a location and use live OpenStreetMap
+data through the configured Overpass provider. PostGIS data and compressed OSM
+snapshots persist in named Docker volumes.
+
+Stop the services with `docker compose down`. Add `--volumes` only when you
+intentionally want to remove local projects and cached source data.
+
+## Implemented stack
 
 - TypeScript, React, Vite, and MapLibre GL JS
 - Three.js rendering
@@ -12,9 +28,39 @@ neighborhood data into an interactive 3D world that can be explored by car.
 - PostgreSQL and PostGIS
 - Docker Compose development environment
 
-## Project status
+## What works
 
-Architecture and initial project setup are in progress.
+- Explicit geocoding and direct latitude/longitude entry
+- Rectangular MapLibre selection with imported feature preview
+- Rate-limited Nominatim and bounded Overpass adapters
+- Immutable, content-addressed OSM snapshots in PostgreSQL/PostGIS
+- Deterministic local-ENU roads, land, and extruded buildings
+- Three.js inspect mode and Rapier ray-cast vehicle driving
+- Persistent height, width, visibility, and road-spawn overrides
+- Saved/recent worlds and visible OpenStreetMap attribution
+- Fully offline sample data for automated tests
+
+## Verify it
+
+With Node.js 24 and pnpm available locally:
+
+```powershell
+corepack pnpm install
+corepack pnpm format:check
+corepack pnpm lint
+corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm build
+corepack pnpm test:e2e
+```
+
+The end-to-end test expects the Docker Compose stack to be running.
+
+## Documentation
+
+See the [project documentation](documents/README.md) for the product scope,
+user workflow, technical architecture, data pipeline, development environment,
+testing strategy, and delivery roadmap.
 
 ## Data licensing
 

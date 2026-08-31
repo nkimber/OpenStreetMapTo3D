@@ -1,0 +1,88 @@
+name: openstreetmap-to-3d
+
+services:
+  db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-osm3d}
+      POSTGRES_USER: ${POSTGRES_USER:-osm3d}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-osm3d-local}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-osm3d} -d ${POSTGRES_DB:-osm3d}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+
+  api:
+    build:
+      context: .
+      target: development
+    command: >-
+      sh -c "pnpm build:packages && pnpm --filter @osm3d/api dev"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://osm3d:osm3d-local@db:5432/osm3d}
+      API_PORT: ${API_PORT:-3000}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:5173}
+      NOMINATIM_BASE_URL: ${NOMINATIM_BASE_URL:-https://nominatim.openstreetmap.org}
+      OVERPASS_BASE_URL: ${OVERPASS_BASE_URL:-https://overpass-api.de/api/interpreter}
+      OSM_USER_AGENT: ${OSM_USER_AGENT:-OpenStreetMapTo3D/0.1 local-development}
+      OSM_CACHE_DIRECTORY: /data/osm
+      MAX_IMPORT_AREA_SQUARE_KM: ${MAX_IMPORT_AREA_SQUARE_KM:-4}
+      MAX_IMPORT_RESPONSE_BYTES: ${MAX_IMPORT_RESPONSE_BYTES:-25000000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - osm_cache:/data/osm
+    expose:
+      - "3000"
+
+  web:
+    build:
+      context: .
+      target: development
+    command: >-
+      sh -c "pnpm build:packages && pnpm --filter @osm3d/web dev --host 0.0.0.0"
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+      VITE_MAP_STYLE_URL: ${VITE_MAP_STYLE_URL:-https://tiles.openfreemap.org/styles/liberty}
+      VITE_API_PROXY_TARGET: http://api:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5173/api/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "5173:5173"
+
+volumes:
+  postgres_data:
+  osm_cache:
