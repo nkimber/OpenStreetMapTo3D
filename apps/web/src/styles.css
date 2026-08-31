@@ -538,10 +538,11 @@ button:disabled {
   background: #0c1a13;
 }
 .engine-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
   display: grid;
   place-items: center;
-  width: 100vw;
-  height: 100vh;
   color: #e7efe9;
   background: #0c1a13;
   font-weight: 750;

@@ -33,8 +33,11 @@ export function WorldWorkspace({
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<WorldEngine | null>(null);
   const [mode, setMode] = useState<EngineMode>("inspect");
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const [selectedId, setSelectedId] = useState<string>();
   const [stats, setStats] = useState(emptyStats);
+  const [engineReady, setEngineReady] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -52,6 +55,8 @@ export function WorldWorkspace({
     const container = containerRef.current;
     if (!container) return;
     let cancelled = false;
+    setEngineReady(false);
+    setError(undefined);
     void WorldEngine.create(container, definition, {
       onSelect: setSelectedId,
       onStats: setStats,
@@ -60,18 +65,21 @@ export function WorldWorkspace({
         if (cancelled) engine.dispose();
         else {
           engineRef.current = engine;
-          engine.setMode(mode);
+          engine.setMode(modeRef.current);
+          setEngineReady(true);
         }
       })
-      .catch((reason: unknown) =>
+      .catch((reason: unknown) => {
+        if (cancelled) return;
         setError(
           reason instanceof Error
             ? reason.message
             : "The 3D engine could not start.",
-        ),
-      );
+        );
+      });
     return () => {
       cancelled = true;
+      setEngineReady(false);
       engineRef.current?.dispose();
       engineRef.current = null;
     };
@@ -175,12 +183,18 @@ export function WorldWorkspace({
           <button
             className={mode === "drive" ? "active" : ""}
             onClick={() => setMode("drive")}
-            disabled={!hasRoads}
+            disabled={!hasRoads || !engineReady}
           >
             Drive
           </button>
         </div>
       </header>
+
+      {!engineReady && !error && (
+        <div className="engine-loading" role="status">
+          Preparing the 3D world…
+        </div>
+      )}
 
       <aside className="world-stats glass-panel" aria-label="World statistics">
         <span>
