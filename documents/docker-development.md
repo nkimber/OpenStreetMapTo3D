@@ -1,8 +1,8 @@
 # Docker development
 
-Status: Implemented
+Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 ## Goal
 
@@ -76,6 +76,10 @@ DATABASE_URL
 PUBLIC_APP_URL
 NOMINATIM_BASE_URL
 OVERPASS_BASE_URL
+USGS_ELEVATION_BASE_URL
+ELEVATION_SAMPLE_SPACING_METERS
+ELEVATION_MAX_GRID_DIMENSION
+ELEVATION_SAMPLE_BATCH_SIZE
 OSM_USER_AGENT
 OSM_CACHE_DIRECTORY
 MAX_IMPORT_AREA_SQUARE_KM
@@ -91,7 +95,7 @@ Real `.env` files are ignored. Container images must not contain credentials.
 - `/api/health` confirms the API process is running.
 - `/api/ready` verifies required configuration, database connectivity, schema
   migrations, and cache-directory writability.
-- External OSM provider outages do not make the local application unready;
+- External OSM or elevation provider outages do not make the local application unready;
   provider state is reported separately.
 
 Compose health checks gate dependent service startup where useful. Application

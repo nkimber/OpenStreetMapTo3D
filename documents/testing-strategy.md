@@ -8,7 +8,8 @@ Last updated: 2026-08-31
 
 Testing must protect geographic correctness, deterministic generation, stable
 vehicle behavior, API compatibility, and the primary user workflow. Tests must
-not make CI availability depend on public geocoding or Overpass services.
+not make CI availability depend on public geocoding, Overpass, or elevation
+services.
 
 ## Test layers
 
@@ -28,6 +29,7 @@ High-value units include:
 - Longitude behavior around the antimeridian
 - OSM height, level, lane, and width interpretation
 - Stable source IDs and build hashes
+- Elevation grid contract validation, bilinear sampling, and snapshot hashing
 - Road graph splitting and intersection classification
 - Polygon orientation, holes, and triangulation
 - Override application and migration
@@ -45,6 +47,8 @@ Implemented representative fixtures:
 - Curved residential road
 - T-junction and cul-de-sac
 - Ground road, bridge, and tunnel sharing coordinates on separate layers
+- Sloped DEM with seam-identical chunks, uphill road profiles, median building
+  bases, and elevation-aware spawn
 
 Additional normalization fixtures cover:
 
@@ -63,6 +67,8 @@ versioned deliberately when algorithms change.
 - Verify limits, timeouts, cache hits, idempotency, and attribution.
 - Verify failed imports do not create complete snapshots.
 - Verify source snapshots are immutable.
+- Verify USGS multipoint batching with recorded responses and fixture/fallback
+  behavior without contacting the public service.
 - Verify migrations from every supported schema baseline.
 
 ### Browser and end-to-end tests
@@ -79,6 +85,8 @@ The offline Playwright workflow covers:
 8. Use safe reset and original-spawn return.
 9. Reopen the saved world and verify the override remains authoritative.
 10. Confirm attribution remains available.
+11. Confirm elevation provider, relief, terrain triangles, and elevation
+    attribution are present.
 
 The sample workflow must run without network access.
 
@@ -92,6 +100,8 @@ The Rapier replay runs a fixed 60 Hz input sequence and asserts bounded outcomes
 - Braking reduces velocity by the documented amount.
 - Repeating the sequence produces equivalent position and speed checkpoints for
   the same Rapier and project versions.
+- Ray casts against the x-major Rapier heightfield match the same terrain plan
+  sampled by rendering.
 
 Pure simulation tests separately cover safe-pose classification, recovery
 timeouts, input smoothing, speed-force tapering, and standard-gamepad mapping.
@@ -142,6 +152,8 @@ demand until execution time is acceptable for every pull request.
 
 - Compare the 2D preview and generated road topology.
 - Drive across intersections and chunk boundaries.
+- Drive uphill/downhill and across a terrain-chunk seam; verify no visible or
+  collision step at the shared edge.
 - Inspect estimated versus source-provided heights.
 - Resize the browser during generation and driving.
 - Cancel and retry imports and generation.

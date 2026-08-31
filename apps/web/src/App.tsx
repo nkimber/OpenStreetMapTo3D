@@ -415,6 +415,24 @@ export function App() {
                   <strong>{preview.diagnostics.length}</strong>
                   <span>diagnostics</span>
                 </div>
+                {preview.elevation && (
+                  <>
+                    <div>
+                      <strong>{preview.elevation.provider}</strong>
+                      <span>elevation source</span>
+                    </div>
+                    <div>
+                      <strong>
+                        {(
+                          preview.elevation.maxHeight -
+                          preview.elevation.minHeight
+                        ).toFixed(1)}{" "}
+                        m
+                      </strong>
+                      <span>terrain relief</span>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>

@@ -8,8 +8,9 @@ The roadmap is organized around demonstrable vertical slices. A phase is
 complete only when its exit criteria pass in Docker and its supporting tests and
 documentation are present.
 
-Current status: Phases 0 through 4 are implemented and verified as a complete
-editable, driveable vertical slice. Phases 5 and 6 remain future work. See
+Current status: Phases 0 through 4 and the Phase 5A terrain foundation are
+implemented and verified as a complete editable, driveable vertical slice.
+Phase 5B and Phase 6 remain future work. See
 [implementation status](implementation-status.md) for verified details.
 
 ## Phase 0: Repository and container foundation
@@ -109,9 +110,9 @@ Exit criteria:
 - Original source snapshots remain unchanged.
 - A changed chunk can rebuild without rebuilding the whole world.
 
-## Phase 5: Terrain and visual quality
+## Phase 5A: Terrain foundation
 
-Status: Planned
+Status: Complete
 
 Deliverables:
 
@@ -126,6 +127,29 @@ Exit criteria:
 - Roads remain driveable on representative sloped terrain.
 - Bridge and tunnel diagnostics prevent obviously incorrect surface merging.
 - Elevation source and license appear in project and export attribution.
+
+Implemented details include USGS 3DEP and fixture providers, immutable DEM
+snapshots, 8 m shared-edge terrain chunks, 4 m road profile sampling, matching
+Three.js/Rapier surfaces, median building bases, bridge decks, tunnel open-cut
+diagnostics, elevation-aware spawn, and deterministic tests.
+
+## Phase 5B: Visual quality
+
+Status: Planned
+
+Deliverables:
+
+- True tunnel-capable mesh or voxel terrain
+- Explicit bridge/tunnel height and endpoint interpretation
+- Improved roofs, level water, vegetation, materials, and road markings
+- Global or self-hosted elevation provider
+- Terrain level of detail and binary Worker transfer
+
+Exit criteria:
+
+- Representative bridges and closed tunnels match their tagged clearances.
+- A 2 km terrain world remains within the published browser budget.
+- Visual layers retain correct source and asset attribution.
 
 ## Phase 6: Distribution and contribution readiness
 

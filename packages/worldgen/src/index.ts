@@ -1,19 +1,40 @@
 import type {
   Diagnostic,
+  ElevationSnapshot,
   GenerationSettings,
   GeoJsonPosition,
   NormalizedFeature,
   Wgs84Position,
+  Wgs84Bounds,
   WorldOverride,
 } from "@osm3d/contracts";
 import { wgs84ToLocal } from "@osm3d/geo";
+import {
+  buildTerrainPlan,
+  createElevationSampler,
+  type ElevationSampler,
+  type TerrainPlan,
+} from "./terrain.js";
 
-export const WORLD_GENERATOR_VERSION = "0.2.0";
+export {
+  buildTerrainPlan,
+  createElevationSampler,
+  sampleElevationSnapshot,
+  sampleTerrainPlan,
+} from "./terrain.js";
+export type { TerrainChunkPlan, TerrainPlan } from "./terrain.js";
+
+export const WORLD_GENERATOR_VERSION = "0.3.0";
 export const DEFAULT_CHUNK_SIZE_METERS = 256;
+export const DEFAULT_TERRAIN_CELLS_PER_CHUNK = 32;
 
 export interface LocalPoint2 {
   x: number;
   z: number;
+}
+
+export interface LocalPoint3 extends LocalPoint2 {
+  y: number;
 }
 
 export interface SurfaceMeshPlan {
@@ -29,8 +50,9 @@ export interface RoadPlan {
   name?: string;
   width: number;
   widthSource: RoadWidthSource;
-  points: LocalPoint2[];
+  points: LocalPoint3[];
   mesh: SurfaceMeshPlan;
+  shoulderMesh?: SurfaceMeshPlan;
   surface?: string;
   layer: number;
   bridge: boolean;
@@ -40,7 +62,7 @@ export interface RoadPlan {
 export interface RoadJunctionPlan {
   planId: string;
   sourceIds: string[];
-  center: LocalPoint2;
+  center: LocalPoint3;
   radius: number;
   kind: "end-cap" | "intersection";
   layer: number;
@@ -52,6 +74,7 @@ export interface BuildingPlan {
   sourceId: string;
   height: number;
   heightSource: "source" | "levels" | "override" | "fallback";
+  baseHeight: number;
   rings: LocalPoint2[][];
   buildingType?: string;
 }
@@ -82,6 +105,7 @@ export interface WorldPlan {
   junctions: RoadJunctionPlan[];
   buildings: BuildingPlan[];
   land: LandPlan[];
+  terrain?: TerrainPlan;
   chunks: WorldChunkPlan[];
   featureChunks: Record<string, string[]>;
   featureCount: number;
@@ -95,13 +119,18 @@ export interface WorldBuildOptions {
   chunkSize?: number;
   sourceSnapshotId?: string;
   generatorVersion?: string;
+  bounds?: Wgs84Bounds;
+  elevation?: ElevationSnapshot;
+  terrainCellsPerChunk?: number;
 }
 
 export interface SpawnPose {
   sourceId?: string;
   x: number;
+  y: number;
   z: number;
   yaw: number;
+  pitch: number;
 }
 
 const roadWidths: Record<string, number> = {
@@ -218,8 +247,8 @@ function polygonRings(
   return [];
 }
 
-function deduplicatePoints(points: LocalPoint2[]): LocalPoint2[] {
-  const result: LocalPoint2[] = [];
+function deduplicatePoints<T extends LocalPoint2>(points: T[]): T[] {
+  const result: T[] = [];
   for (const point of points) {
     const previous = result.at(-1);
     if (
@@ -239,7 +268,7 @@ function normalizedDirection(from: LocalPoint2, to: LocalPoint2): LocalPoint2 {
 }
 
 export function buildRoadSurface(
-  inputPoints: LocalPoint2[],
+  inputPoints: Array<LocalPoint2 | LocalPoint3>,
   width: number,
   elevation = 0.035,
 ): SurfaceMeshPlan {
@@ -277,10 +306,10 @@ export function buildRoadSurface(
     const offset = Math.min(halfWidth / denominator, halfWidth * 2.5);
     positions.push(
       point.x + miterX * offset,
-      elevation,
+      "y" in point ? point.y : elevation,
       point.z + miterZ * offset,
       point.x - miterX * offset,
-      elevation,
+      "y" in point ? point.y : elevation,
       point.z - miterZ * offset,
     );
   }
@@ -295,19 +324,79 @@ export function buildRoadSurface(
   return { positions, indices };
 }
 
+function buildRoadShoulderSurface(
+  points: LocalPoint3[],
+  width: number,
+  sampleTerrain: (x: number, z: number) => number,
+): SurfaceMeshPlan {
+  if (points.length < 2) return { positions: [], indices: [] };
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const inner = width / 2;
+  const outer = inner + 4;
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    if (!point) continue;
+    const previous = points[Math.max(0, index - 1)] ?? point;
+    const next = points[Math.min(points.length - 1, index + 1)] ?? point;
+    const direction = normalizedDirection(previous, next);
+    const normal = { x: -direction.z, z: direction.x };
+    const leftOuter = {
+      x: point.x + normal.x * outer,
+      z: point.z + normal.z * outer,
+    };
+    const rightOuter = {
+      x: point.x - normal.x * outer,
+      z: point.z - normal.z * outer,
+    };
+    positions.push(
+      leftOuter.x,
+      sampleTerrain(leftOuter.x, leftOuter.z) + 0.01,
+      leftOuter.z,
+      point.x + normal.x * inner,
+      point.y - 0.015,
+      point.z + normal.z * inner,
+      point.x - normal.x * inner,
+      point.y - 0.015,
+      point.z - normal.z * inner,
+      rightOuter.x,
+      sampleTerrain(rightOuter.x, rightOuter.z) + 0.01,
+      rightOuter.z,
+    );
+  }
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const current = index * 4;
+    const next = current + 4;
+    indices.push(
+      current,
+      next,
+      current + 1,
+      next,
+      next + 1,
+      current + 1,
+      current + 2,
+      next + 2,
+      current + 3,
+      next + 2,
+      next + 3,
+      current + 3,
+    );
+  }
+  return { positions, indices };
+}
+
 function buildDiscSurface(
-  center: LocalPoint2,
+  center: LocalPoint3,
   radius: number,
-  elevation: number,
 ): SurfaceMeshPlan {
   const segments = 18;
-  const positions = [center.x, elevation, center.z];
+  const positions = [center.x, center.y, center.z];
   const indices: number[] = [];
   for (let index = 0; index < segments; index += 1) {
     const angle = (index / segments) * Math.PI * 2;
     positions.push(
       center.x + Math.cos(angle) * radius,
-      elevation,
+      center.y,
       center.z - Math.sin(angle) * radius,
     );
   }
@@ -326,12 +415,99 @@ function roadLayer(feature: NormalizedFeature): number {
   return Number.isFinite(parsed) ? Math.max(-5, Math.min(5, parsed)) : 0;
 }
 
-function roadElevation(
+function densifyRoad(points: LocalPoint2[], maximumSegment = 4): LocalPoint2[] {
+  const result: LocalPoint2[] = [];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    if (!start || !end) continue;
+    if (result.length === 0) result.push(start);
+    const distance = Math.hypot(end.x - start.x, end.z - start.z);
+    const steps = Math.max(1, Math.ceil(distance / maximumSegment));
+    for (let step = 1; step <= steps; step += 1) {
+      const ratio = step / steps;
+      result.push({
+        x: start.x + (end.x - start.x) * ratio,
+        z: start.z + (end.z - start.z) * ratio,
+      });
+    }
+  }
+  return deduplicatePoints(result);
+}
+
+function smoothRoadHeights(points: LocalPoint3[]): LocalPoint3[] {
+  let result = points.map((point) => ({ ...point }));
+  for (let pass = 0; pass < 2; pass += 1) {
+    result = result.map((point, index, all) => {
+      if (index === 0 || index === all.length - 1) return point;
+      const before = all[index - 1]?.y ?? point.y;
+      const after = all[index + 1]?.y ?? point.y;
+      return { ...point, y: before * 0.25 + point.y * 0.5 + after * 0.25 };
+    });
+  }
+  return result;
+}
+
+function verticalRoadOffset(
+  progress: number,
   layer: number,
   bridge: boolean,
   tunnel: boolean,
 ): number {
-  return 0.035 + layer * 0.006 + (bridge ? 0.02 : tunnel ? -0.01 : 0);
+  const separation = Math.max(3, Math.abs(layer) * 3);
+  if (bridge) return Math.sin(progress * Math.PI) * separation;
+  if (tunnel) return -Math.sin(progress * Math.PI) * separation;
+  return layer * 3;
+}
+
+function drapedRoadPoints(
+  points: LocalPoint2[],
+  sampler: ElevationSampler | undefined,
+  layer: number,
+  bridge: boolean,
+  tunnel: boolean,
+): LocalPoint3[] {
+  const dense = densifyRoad(points);
+  const distances = [0];
+  for (let index = 1; index < dense.length; index += 1) {
+    const previous = dense[index - 1];
+    const point = dense[index];
+    distances.push(
+      (distances[index - 1] ?? 0) +
+        (previous && point
+          ? Math.hypot(point.x - previous.x, point.z - previous.z)
+          : 0),
+    );
+  }
+  const total = distances.at(-1) ?? 1;
+  const terrainPoints = dense.map((point) => ({
+    ...point,
+    y: (sampler?.atLocal(point.x, point.z) ?? 0) + 0.1,
+  }));
+  const smoothed = smoothRoadHeights(terrainPoints);
+  return smoothed.map((point, index) => ({
+    ...point,
+    y:
+      point.y +
+      verticalRoadOffset(
+        (distances[index] ?? 0) / Math.max(1, total),
+        layer,
+        bridge,
+        tunnel,
+      ),
+  }));
+}
+
+function maximumRoadGrade(points: LocalPoint3[]): number {
+  let maximum = 0;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    if (!start || !end) continue;
+    const run = Math.hypot(end.x - start.x, end.z - start.z);
+    if (run > 0) maximum = Math.max(maximum, Math.abs(end.y - start.y) / run);
+  }
+  return maximum * 100;
 }
 
 function centerOfPoints(points: LocalPoint2[]): LocalPoint2 {
@@ -352,13 +528,13 @@ function coordinateKey(point: LocalPoint2, layer: number): string {
 }
 
 interface JunctionAccumulator {
-  center: LocalPoint2;
+  center: LocalPoint3;
   layer: number;
   radius: number;
   sourceIds: Set<string>;
   endpointCount: number;
   occurrenceCount: number;
-  elevation: number;
+  elevationSum: number;
 }
 
 function createJunctions(roads: RoadPlan[]): RoadJunctionPlan[] {
@@ -373,11 +549,12 @@ function createJunctions(roads: RoadPlan[]): RoadJunctionPlan[] {
         sourceIds: new Set<string>(),
         endpointCount: 0,
         occurrenceCount: 0,
-        elevation: roadElevation(road.layer, road.bridge, road.tunnel) + 0.001,
+        elevationSum: 0,
       };
       node.radius = Math.max(node.radius, road.width / 2);
       node.sourceIds.add(road.sourceId);
       node.occurrenceCount += 1;
+      node.elevationSum += point.y;
       if (index === 0 || index === road.points.length - 1)
         node.endpointCount += 1;
       nodes.set(key, node);
@@ -396,11 +573,20 @@ function createJunctions(roads: RoadPlan[]): RoadJunctionPlan[] {
       return {
         planId: `junction:${key}`,
         sourceIds,
-        center: node.center,
+        center: {
+          ...node.center,
+          y: node.elevationSum / node.occurrenceCount + 0.002,
+        },
         radius: node.radius,
         kind,
         layer: node.layer,
-        mesh: buildDiscSurface(node.center, node.radius, node.elevation),
+        mesh: buildDiscSurface(
+          {
+            ...node.center,
+            y: node.elevationSum / node.occurrenceCount + 0.002,
+          },
+          node.radius,
+        ),
       };
     });
 }
@@ -568,9 +754,10 @@ export function closestPointOnRoad(
   road: RoadPlan,
   point: LocalPoint2,
 ): SpawnPose {
-  let closest = road.points[0] ?? { x: 0, z: 0 };
+  let closest = road.points[0] ?? { x: 0, y: 0, z: 0 };
   let closestDistance = Number.POSITIVE_INFINITY;
   let yaw = 0;
+  let pitch = 0;
   for (let index = 0; index < road.points.length - 1; index += 1) {
     const start = road.points[index];
     const end = road.points[index + 1];
@@ -586,15 +773,20 @@ export function closestPointOnRoad(
         ((point.x - start.x) * dx + (point.z - start.z) * dz) / lengthSquared,
       ),
     );
-    const candidate = { x: start.x + dx * ratio, z: start.z + dz * ratio };
+    const candidate = {
+      x: start.x + dx * ratio,
+      y: start.y + (end.y - start.y) * ratio,
+      z: start.z + dz * ratio,
+    };
     const distance = Math.hypot(point.x - candidate.x, point.z - candidate.z);
     if (distance < closestDistance) {
       closestDistance = distance;
       closest = candidate;
       yaw = Math.atan2(-dx, -dz);
+      pitch = Math.atan2(end.y - start.y, Math.hypot(dx, dz));
     }
   }
-  return { sourceId: road.sourceId, ...closest, yaw };
+  return { sourceId: road.sourceId, ...closest, yaw, pitch };
 }
 
 export function resolveSpawnPose(
@@ -607,7 +799,7 @@ export function resolveSpawnPose(
   const road =
     plan.roads.find((item) => item.sourceId === spawnOverride?.targetId) ??
     plan.roads.find((item) => item.points.length > 1);
-  if (!road) return { x: 0, z: 0, yaw: 0 };
+  if (!road) return { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 };
   const x = spawnOverride?.payload.x;
   const z = spawnOverride?.payload.z;
   if (typeof x === "number" && typeof z === "number") {
@@ -625,6 +817,9 @@ export function buildWorldPlan(
 ): WorldPlan {
   const generatorVersion = options.generatorVersion ?? WORLD_GENERATOR_VERSION;
   const chunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE_METERS;
+  const elevationSampler = options.elevation
+    ? createElevationSampler(options.elevation, anchor)
+    : undefined;
   const hidden = new Set(
     overrides
       .filter(
@@ -640,6 +835,13 @@ export function buildWorldPlan(
   const diagnostics: Diagnostic[] = features.flatMap(
     (feature) => feature.warnings,
   );
+  if (options.elevation?.provider === "flat-fallback") {
+    diagnostics.push({
+      code: "elevation.flat-fallback",
+      severity: "warning",
+      message: "No DEM coverage is available; generated terrain is flat.",
+    });
+  }
 
   for (const feature of features) {
     if (hidden.has(feature.sourceId)) continue;
@@ -650,10 +852,10 @@ export function buildWorldPlan(
         ["path", "footway", "cycleway"].includes(highway)
       )
         continue;
-      const points = deduplicatePoints(
+      const sourcePoints = deduplicatePoints(
         feature.geometry.coordinates.map((point) => localPoint(point, anchor)),
       );
-      if (points.length < 2) {
+      if (sourcePoints.length < 2) {
         diagnostics.push({
           code: "road.insufficient-points",
           severity: "warning",
@@ -667,11 +869,27 @@ export function buildWorldPlan(
       const layer = roadLayer(feature);
       const bridge = booleanTag(feature.tags.bridge);
       const tunnel = booleanTag(feature.tags.tunnel);
+      const points = drapedRoadPoints(
+        sourcePoints,
+        elevationSampler,
+        layer,
+        bridge,
+        tunnel,
+      );
+      const maximumGrade = maximumRoadGrade(points);
+      if (maximumGrade > 20) {
+        diagnostics.push({
+          code: "road.suspicious-grade",
+          severity: "warning",
+          message: `Road grade reaches ${maximumGrade.toFixed(1)}%; inspect DEM coverage or vertical tags.`,
+          sourceId: feature.sourceId,
+        });
+      }
       if (bridge || tunnel || layer !== 0) {
         diagnostics.push({
           code: "road.vertical-separation",
           severity: "info",
-          message: `${bridge ? "Bridge" : tunnel ? "Tunnel" : "Layered road"} is kept separate at OSM layer ${layer}; terrain clearance remains approximate.`,
+          message: `${bridge ? "Bridge deck" : tunnel ? "Tunnel open-cut" : "Layered road"} is generated separately at OSM layer ${layer}.`,
           sourceId: feature.sourceId,
         });
       }
@@ -682,11 +900,16 @@ export function buildWorldPlan(
         width: width.width,
         widthSource: width.source,
         points,
-        mesh: buildRoadSurface(
-          points,
-          width.width,
-          roadElevation(layer, bridge, tunnel),
-        ),
+        mesh: buildRoadSurface(points, width.width),
+        ...(!bridge && !tunnel && elevationSampler
+          ? {
+              shoulderMesh: buildRoadShoulderSurface(
+                points,
+                width.width,
+                elevationSampler.atLocal,
+              ),
+            }
+          : {}),
         ...(feature.tags.surface ? { surface: feature.tags.surface } : {}),
         layer,
         bridge,
@@ -705,11 +928,17 @@ export function buildWorldPlan(
           });
           return;
         }
+        const sampledBaseHeights = (rings[0] ?? [])
+          .map((point) => elevationSampler?.atLocal(point.x, point.z) ?? 0)
+          .sort((left, right) => left - right);
+        const baseHeight =
+          sampledBaseHeights[Math.floor(sampledBaseHeights.length / 2)] ?? 0;
         buildings.push({
           planId: `building:${feature.sourceId}:${polygonIndex}`,
           sourceId: feature.sourceId,
           height: height.height,
           heightSource: height.source,
+          baseHeight,
           rings,
           ...(feature.tags.building
             ? { buildingType: feature.tags.building }
@@ -733,6 +962,24 @@ export function buildWorldPlan(
     }
   }
 
+  const terrain =
+    options.elevation && options.bounds
+      ? buildTerrainPlan({
+          bounds: options.bounds,
+          anchor,
+          elevation: options.elevation,
+          chunkSize,
+          cellsPerChunk:
+            options.terrainCellsPerChunk ?? DEFAULT_TERRAIN_CELLS_PER_CHUNK,
+          tunnelRoads: roads
+            .filter((road) => road.tunnel)
+            .map((road) => ({
+              points: road.points,
+              width: road.width,
+              tunnel: road.tunnel,
+            })),
+        })
+      : undefined;
   const junctions = createJunctions(roads);
   const chunkResult = buildChunks(roads, buildings, land, junctions, chunkSize);
   const buildHash = deterministicHash({
@@ -743,12 +990,17 @@ export function buildWorldPlan(
     settings,
     overrides: overrideIdentity(overrides),
     chunkSize,
+    bounds: options.bounds,
+    elevationContentHash: options.elevation?.contentHash,
+    terrainCellsPerChunk:
+      options.terrainCellsPerChunk ?? DEFAULT_TERRAIN_CELLS_PER_CHUNK,
   });
   return {
     roads,
     junctions,
     buildings,
     land,
+    ...(terrain ? { terrain } : {}),
     chunks: chunkResult.chunks,
     featureChunks: chunkResult.featureChunks,
     featureCount: features.length,

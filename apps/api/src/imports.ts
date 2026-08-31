@@ -12,6 +12,7 @@ import type {
 import { normalizeOverpass } from "@osm3d/osm";
 import type { AppConfig } from "./config.js";
 import type { DatabasePool } from "./database.js";
+import { fetchElevationData } from "./elevation.js";
 import { fetchOsmData } from "./providers.js";
 
 const gzipAsync = promisify(gzip);
@@ -75,21 +76,23 @@ export async function executeImportJob(
   request: ImportRequest,
 ): Promise<void> {
   try {
-    await updateJob(pool, id, "running", 10, "downloading");
-    const { raw, query } = await fetchOsmData(
-      request.provider,
-      request.bounds,
-      config,
-    );
-    await updateJob(pool, id, "running", 40, "normalizing");
+    await updateJob(pool, id, "running", 10, "downloading-map-and-elevation");
+    const [{ raw, query }, elevation] = await Promise.all([
+      fetchOsmData(request.provider, request.bounds, config),
+      fetchElevationData(request.provider, request.bounds, config),
+    ]);
+    await updateJob(pool, id, "running", 45, "normalizing");
     const normalized = normalizeOverpass(raw);
     const rawJson = JSON.stringify(raw);
-    const contentHash = createHash("sha256").update(rawJson).digest("hex");
+    const osmContentHash = createHash("sha256").update(rawJson).digest("hex");
+    const contentHash = createHash("sha256")
+      .update(`${osmContentHash}:${elevation.snapshot.contentHash}`)
+      .digest("hex");
     const compressed = await gzipAsync(Buffer.from(rawJson));
     await mkdir(config.OSM_CACHE_DIRECTORY, { recursive: true });
     const cachePath = join(
       config.OSM_CACHE_DIRECTORY,
-      `${contentHash}.json.gz`,
+      `${osmContentHash}.json.gz`,
     );
     await writeFile(cachePath, compressed, { flag: "wx" }).catch(
       (error: NodeJS.ErrnoException) => {
@@ -104,10 +107,11 @@ export async function executeImportJob(
       await client.query("BEGIN");
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO source_snapshots
-           (id, provider, query_version, bounds, query, retrieved_at, content_hash, cache_path, attribution, license_url)
+           (id, provider, query_version, bounds, query, retrieved_at, content_hash, cache_path, attribution, license_url,
+            elevation_snapshot, elevation_content_hash)
          VALUES
            ($1, $2, $3, ST_SetSRID(ST_GeomFromGeoJSON($4), 4326), $5::jsonb, now(), $6, $7,
-            '© OpenStreetMap contributors', 'https://www.openstreetmap.org/copyright')
+            '© OpenStreetMap contributors', 'https://www.openstreetmap.org/copyright', $8::jsonb, $9)
          ON CONFLICT (provider, content_hash) DO NOTHING
          RETURNING id`,
         [
@@ -115,9 +119,16 @@ export async function executeImportJob(
           request.provider,
           request.queryVersion,
           JSON.stringify(boundsPolygon(request.bounds)),
-          JSON.stringify({ query, bounds: request.bounds }),
+          JSON.stringify({
+            query,
+            bounds: request.bounds,
+            elevationProvider: elevation.snapshot.provider,
+            elevationDataset: elevation.snapshot.dataset,
+          }),
           contentHash,
           cachePath,
+          JSON.stringify(elevation.snapshot),
+          elevation.snapshot.contentHash,
         ],
       );
       if (inserted.rowCount === 0) {
@@ -168,7 +179,7 @@ export async function executeImportJob(
     await updateJob(pool, id, "complete", 100, "complete", {
       snapshotId,
       featureCount: normalized.features.length,
-      diagnostics: normalized.diagnostics,
+      diagnostics: [...normalized.diagnostics, ...elevation.diagnostics],
     });
   } catch (error) {
     const message =

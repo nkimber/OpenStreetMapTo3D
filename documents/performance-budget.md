@@ -6,7 +6,7 @@ Last updated: 2026-08-31
 
 ## Scope
 
-These budgets cover the current flat-terrain browser runtime. They are
+These budgets cover the current elevation-aware browser runtime. They are
 acceptance targets, not claims that every OpenStreetMap area has equal feature
 density. A result outside a budget must identify the fixture, build hash,
 hardware, browser, and dominant feature or chunk before the limit is changed.
@@ -44,19 +44,22 @@ The initial manual baseline was recorded on:
 - 63.4 GiB system memory
 - Node.js 24.13.1, Playwright 1.62.1
 
-For the bundled 23-feature sample, the headed Chromium editor reported 13
-chunks, 240 road triangles, a 5 ms warm Worker plan, and 60 fps. A building
-height edit reported one rebuilt chunk. This is an observational developer
-baseline; CI uses SwiftShader and is a functional rather than GPU-performance
-measurement.
+For the bundled 23-feature elevation sample, headed Chromium reported 13 feature
+chunks, 36 terrain chunks, 73,728 terrain triangles, 9,252 road/shoulder
+triangles, a 174 ms warm Worker plan, 60 fps, and zero recoveries after warm-up.
+A building height edit reported one rebuilt feature chunk. This is an
+observational developer baseline; CI uses SwiftShader and is a functional rather
+than GPU-performance measurement.
 
 ## Measurement surfaces
 
-The **Build & performance** panel reports frame rate, road triangles, Worker
-duration, affected chunks, main-thread frames longer than 50 ms, recovery count,
-diagnostic count, and deterministic build hash. The offline browser test checks
-the speed limit and one-chunk rebuild. Geometry fixtures check deterministic
-chunk ownership, joined curves/intersections, and vertical-layer separation.
+The **Build & performance** panel reports frame rate, road and terrain triangles,
+elevation provider/range, car elevation, Worker duration, affected chunks,
+main-thread frames longer than 50 ms, recovery count, diagnostic count, and
+deterministic build hash. The offline browser test checks elevation attribution,
+the speed limit, and one-chunk rebuild. Geometry fixtures check deterministic
+terrain seams, collider sampling, uphill profiles, joined curves/intersections,
+and vertical-layer separation.
 
 Before a performance-sensitive release:
 

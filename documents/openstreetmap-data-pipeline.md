@@ -1,6 +1,6 @@
 # OpenStreetMap data pipeline
 
-Status: Draft
+Status: Active
 
 Last updated: 2026-08-30
 
@@ -21,6 +21,11 @@ interface GeocoderProvider {
 interface OsmDataProvider {
   fetchBounds(bounds: Wgs84Bounds, signal: AbortSignal): Promise<RawSnapshot>;
 }
+
+interface ElevationProvider {
+  readonly id: "fixture" | "usgs-3dep" | "flat-fallback";
+  fetch(bounds: Wgs84Bounds): Promise<ElevationSnapshot>;
+}
 ```
 
 Initial adapters:
@@ -28,12 +33,30 @@ Initial adapters:
 - `NominatimGeocoder`: explicit, rate-limited searches
 - `OverpassOsmDataProvider`: neighborhood-sized bounding-box queries
 - `FixtureOsmDataProvider`: deterministic local development and tests
+- `Usgs3depElevationProvider`: batched bilinear samples from the USGS 3DEP
+  ImageServer
+- Synthetic fixture elevation: deterministic slope and localized hill
 
 Future adapters:
 
 - Regional `.osm.pbf` files
 - Self-hosted Nominatim and PostGIS
 - Managed OSM data providers
+- Global or self-hosted DEM services implementing the same snapshot contract
+
+## Elevation extraction
+
+OSM and elevation are fetched concurrently for the selected bounds. The USGS
+adapter calculates a target grid near 10 m spacing, caps each axis at 129
+samples, and batches ArcGIS multipoint requests below the service sample limit.
+The resulting absolute metre values and vertical datum are stored, not queried
+again during a world build.
+
+If more than 25% of a live grid is missing, or the provider is unavailable, the
+import retains its OSM features and stores a diagnosed flat fallback. This is a
+recovery path, not synthetic elevation. The offline fixture instead supplies a
+known deterministic hill so elevation generation and driving remain testable
+without network access.
 
 ## Geocoding
 
@@ -72,7 +95,8 @@ The API enforces:
 - Cancellation when the user abandons an import
 
 The raw request body, endpoint identity, retrieval time, query, response hash,
-and required attribution become the immutable source snapshot.
+elevation grid/hash, and required attributions become the immutable source
+snapshot.
 
 ## Normalization stages
 

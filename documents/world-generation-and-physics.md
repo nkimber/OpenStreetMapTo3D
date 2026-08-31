@@ -26,6 +26,7 @@ A build key is derived from:
 
 ```text
 source snapshot hash
++ elevation snapshot hash
 + normalized schema version
 + generation settings
 + ordered user overrides
@@ -41,7 +42,8 @@ The local world is divided into deterministic 256 metre square chunks.
 
 Each chunk may contain:
 
-- Ground mesh
+- An 8 m visual/physics heightfield grid with boundary samples shared by its
+  neighbors
 - Road surface mesh
 - Building mesh or instanced objects
 - Decorative land and water meshes
@@ -67,16 +69,20 @@ Width precedence:
 Implemented generation stages:
 
 1. Deduplicate centerline points and classify layer, bridge, and tunnel state.
-2. Create continuous two-sided strips with stable miter joins.
-3. Group equal graph nodes per vertical layer.
-4. Generate deterministic intersection and round end-cap discs.
-5. Triangulate visible surfaces and retain centerlines for exact spawn snapping.
-6. Assign roads and junction dependencies to chunks in stable order.
+2. Densify centerlines to at most 4 m and bilinearly sample the immutable DEM.
+3. Smooth longitudinal grades while keeping each cross-section level.
+4. Apply bridge, tunnel, and OSM-layer separation with endpoint ramps.
+5. Create continuous two-sided strips with stable miter joins and blended
+   ground-road shoulders.
+6. Group equal graph nodes per vertical layer and create intersection/end-cap
+   surfaces.
+7. Diagnose grades above 20% and retain 3D centerlines for exact spawn snapping.
+8. Use the road and junction triangle strips as fixed Rapier colliders.
 
-The visible road and the physics surface are separate concerns. The MVP may use
-a continuous flat ground collider with roads rendered slightly above it. Later,
-road-specific colliders and friction values can follow elevation and surface
-types.
+Bridge decks are raised separate surfaces with matching colliders. A heightfield
+cannot contain a hole or overhang, so a tunnel lowers nearby terrain into a
+diagnosed open cut. A later mesh or voxel terrain backend is required for a
+closed tunnel.
 
 ## Buildings
 
@@ -97,23 +103,28 @@ Every generated building retains:
 - Selected height and its origin (`source`, `levels`, or `fallback`)
 - Applied overrides
 - Diagnostics
+- Median terrain base height
 
 Building collision should use simplified fixed geometry. Dense visual details
 must not create unnecessarily complex collision meshes.
 
-## Ground, land use, and water
+## Terrain, land use, and water
 
-MVP ground is a flat plane covering the selected boundary with a safety margin.
-Land-use polygons apply procedural colors or materials above that plane. Water
-is decorative until terrain and bridge clearance are supported.
+The DEM contract stores absolute metre heights in a recorded vertical datum.
+Generation bilinearly samples that grid and subtracts the height at the world
+anchor, producing local ENU-relative `Y` values. The absolute reference height
+remains in `TerrainPlan` for inspection.
 
-Future terrain support will:
+Terrain chunks align to the 256 m world lattice and include a 40 m safety
+margin. The default 32 × 32 cells create an 8 m grid. Values are serialized in
+Rapier-compatible x-major order; adjacent chunks sample the same coordinates at
+their borders. Three.js triangulates these heights and Rapier consumes the same
+array as a heightfield collider. Tests ray-cast the collider and compare it with
+the visual plan sampler.
 
-- Retrieve elevation through a provider adapter.
-- Construct a heightfield visual mesh and Rapier collider.
-- Conform roads to a smoothed terrain profile.
-- Preserve bridge and tunnel separation.
-- Record the elevation source and license alongside OSM attribution.
+Land-use overlays are resampled onto the terrain. Buildings remain vertical and
+start at the median height of their outer footprint. Water currently follows
+terrain like other overlays; a level water-plane model is future work.
 
 ## Web Worker boundary
 
@@ -123,6 +134,7 @@ contracts from `packages/contracts`.
 Worker input:
 
 - Normalized features
+- Immutable elevation snapshot and world bounds
 - Local-world anchor
 - Generation settings
 - User overrides
@@ -131,9 +143,11 @@ Worker input:
 Worker output is a structured-cloneable `WorldPlan` containing road surface
 positions and indices, junctions, building/land plans, authoritative chunks,
 feature-to-chunk dependencies, the deterministic build hash, diagnostics, and
-statistics. The main thread converts that plan into Three.js buffers and Rapier
-objects. A future binary/transferable representation can reduce structured-copy
-cost for larger areas without changing the versioned message contract.
+statistics. It also contains heightfield chunks, elevation metadata, 3D road
+profiles, shoulder surfaces, and building base heights. The main thread converts
+that one plan into both Three.js buffers and Rapier objects. A future
+binary/transferable representation can reduce structured-copy cost for larger
+areas without changing the versioned message contract.
 
 The main thread owns Three.js objects, input handling, and the render loop.
 
@@ -150,11 +164,14 @@ The initial vehicle uses Rapier's dynamic ray-cast vehicle controller:
 - Tunable engine, brake, steering, suspension, and friction parameters
 - Continuous collision detection where profiling shows it is necessary
 
-Reset behavior records recent upright, in-bounds transforms on valid ground.
+Reset behavior records recent upright, in-bounds transforms relative to the
+terrain below the car, so valid negative local elevations do not trigger false
+recovery.
 Pressing `R` or **Reset car** restores the latest safe transform; `Shift+R` or
 **Return to spawn** restores the configured road spawn. Both clear velocity.
 Sustained unsafe poses are recovered automatically after 2.5 seconds, and a
-fall below -8 m recovers immediately.
+fall more than 8 m below the local terrain recovers immediately. Inspect mode
+holds the service brake and handbrake so a parked car does not roll down a hill.
 
 Forward engine force tapers toward 90 km/h and reverse force toward 32 km/h.
 The UI supports keyboard controls, the browser standard-gamepad layout, and a
@@ -166,8 +183,8 @@ The default world is 1 km by 1 km and the recommended maximum is 2 km by 2 km.
 Drive mode targets 60 frames per second, routine main-thread work stays below
 50 ms, generation is cancelable, and a single-feature edit rebuilds only its
 affected chunks. The running editor exposes frame rate, road triangles, Worker
-duration, long frames, recovery count, last rebuilt chunks, diagnostics, and
-build hash.
+duration, terrain triangles/source/range, car elevation, long frames, recovery
+count, last rebuilt chunks, diagnostics, and build hash.
 
 See the measured baseline and explicit gates in
 [performance-budget.md](performance-budget.md).

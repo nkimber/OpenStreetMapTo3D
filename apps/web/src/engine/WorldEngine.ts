@@ -21,9 +21,11 @@ import {
   closestPointOnRoad,
   deterministicHash,
   resolveSpawnPose,
+  sampleTerrainPlan,
   type BuildingPlan,
   type LocalPoint2,
   type SurfaceMeshPlan,
+  type TerrainChunkPlan,
   type WorldChunkPlan,
   type WorldPlan,
 } from "@osm3d/worldgen";
@@ -41,6 +43,11 @@ export interface EngineStats {
   fps: number;
   chunks: number;
   triangles: number;
+  terrainTriangles: number;
+  terrainChunks: number;
+  elevationProvider: string;
+  elevationRange: number;
+  vehicleElevation: number;
   buildHash: string;
   buildDurationMs: number;
   diagnosticCount: number;
@@ -136,6 +143,53 @@ function geometryFromSurface(surface: SurfaceMeshPlan): THREE.BufferGeometry {
   return geometry;
 }
 
+function geometryFromTerrain(chunk: TerrainChunkPlan): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let xIndex = 0; xIndex < chunk.columns; xIndex += 1) {
+    const x =
+      chunk.bounds.minX +
+      (xIndex / (chunk.columns - 1)) * (chunk.bounds.maxX - chunk.bounds.minX);
+    for (let zIndex = 0; zIndex < chunk.rows; zIndex += 1) {
+      const z =
+        chunk.bounds.minZ +
+        (zIndex / (chunk.rows - 1)) * (chunk.bounds.maxZ - chunk.bounds.minZ);
+      positions.push(x, chunk.heights[xIndex * chunk.rows + zIndex] ?? 0, z);
+    }
+  }
+  for (let xIndex = 0; xIndex < chunk.columns - 1; xIndex += 1) {
+    for (let zIndex = 0; zIndex < chunk.rows - 1; zIndex += 1) {
+      const a = xIndex * chunk.rows + zIndex;
+      const b = (xIndex + 1) * chunk.rows + zIndex;
+      const c = a + 1;
+      const d = b + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  return geometryFromSurface({ positions, indices });
+}
+
+function conformGeometryToTerrain(
+  geometry: THREE.BufferGeometry,
+  plan: WorldPlan,
+  offset: number,
+): void {
+  geometry.rotateX(-Math.PI / 2);
+  const positions = geometry.getAttribute("position");
+  for (let index = 0; index < positions.count; index += 1) {
+    positions.setY(
+      index,
+      sampleTerrainPlan(
+        plan.terrain,
+        positions.getX(index),
+        positions.getZ(index),
+      ) + offset,
+    );
+  }
+  positions.needsUpdate = true;
+  geometry.computeVertexNormals();
+}
+
 function disposeObject(root: THREE.Object3D): void {
   root.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
@@ -156,7 +210,11 @@ function planTriangles(plan: WorldPlan): number {
     (sum, junction) => sum + junction.mesh.indices.length / 3,
     0,
   );
-  return Math.round(roadTriangles + junctionTriangles);
+  const shoulderTriangles = plan.roads.reduce(
+    (sum, road) => sum + (road.shoulderMesh?.indices.length ?? 0) / 3,
+    0,
+  );
+  return Math.round(roadTriangles + shoulderTriangles + junctionTriangles);
 }
 
 export class WorldEngine {
@@ -460,6 +518,27 @@ export class WorldEngine {
   }
 
   private buildGround(): void {
+    if (this.plan.terrain) {
+      const material = new THREE.MeshStandardMaterial({
+        color:
+          this.definition.world.settings.visualStyle === "night"
+            ? 0x18251c
+            : 0x88a66b,
+        roughness: 0.96,
+      });
+      for (const chunk of this.plan.terrain.chunks) {
+        const ground = new THREE.Mesh(
+          geometryFromTerrain(chunk),
+          material.clone(),
+        );
+        ground.receiveShadow = true;
+        ground.name = chunk.id;
+        ground.userData.permanent = true;
+        this.scene.add(ground);
+      }
+      material.dispose();
+      return;
+    }
     const size = this.worldSize();
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(size.width, size.depth),
@@ -494,8 +573,10 @@ export class WorldEngine {
           : area.classification === "park"
             ? 0x6fa75f
             : 0x839d69;
+      const geometry = new THREE.ShapeGeometry(shape);
+      conformGeometryToTerrain(geometry, this.plan, 0.018);
       const mesh = new THREE.Mesh(
-        new THREE.ShapeGeometry(shape),
+        geometry,
         new THREE.MeshStandardMaterial({
           color,
           roughness: 0.9,
@@ -503,8 +584,6 @@ export class WorldEngine {
           opacity: 0.82,
         }),
       );
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.position.y = 0.012;
       mesh.receiveShadow = true;
       mesh.userData.sourceId = area.sourceId;
       mesh.userData.featureKind = area.kind;
@@ -515,12 +594,32 @@ export class WorldEngine {
     for (const index of chunk.roadIndexes) {
       const road = this.plan.roads[index];
       if (!road) continue;
+      if (road.shoulderMesh) {
+        const shoulder = new THREE.Mesh(
+          geometryFromSurface(road.shoulderMesh),
+          new THREE.MeshStandardMaterial({
+            color:
+              this.definition.world.settings.visualStyle === "night"
+                ? 0x263127
+                : 0x758866,
+            roughness: 0.98,
+            polygonOffset: true,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1,
+          }),
+        );
+        shoulder.receiveShadow = true;
+        group.add(shoulder);
+      }
       const mesh = new THREE.Mesh(
         geometryFromSurface(road.mesh),
         new THREE.MeshStandardMaterial({
           color: road.tunnel ? 0x252b30 : road.bridge ? 0x48515a : 0x343b42,
           roughness: 0.88,
           metalness: 0.02,
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -2,
         }),
       );
       mesh.receiveShadow = true;
@@ -578,7 +677,7 @@ export class WorldEngine {
         roughness: 0.82,
       }),
     );
-    mesh.position.y = 0.02;
+    mesh.position.y = building.baseHeight + 0.02;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData.sourceId = building.sourceId;
@@ -608,6 +707,31 @@ export class WorldEngine {
 
   private buildPhysicsGround(): void {
     this.physics.timestep = FIXED_STEP;
+    if (this.plan.terrain) {
+      for (const chunk of this.plan.terrain.chunks) {
+        const body = this.physics.createRigidBody(
+          RAPIER.RigidBodyDesc.fixed().setTranslation(
+            (chunk.bounds.minX + chunk.bounds.maxX) / 2,
+            0,
+            (chunk.bounds.minZ + chunk.bounds.maxZ) / 2,
+          ),
+        );
+        this.physics.createCollider(
+          RAPIER.ColliderDesc.heightfield(
+            chunk.columns - 1,
+            chunk.rows - 1,
+            new Float32Array(chunk.heights),
+            {
+              x: chunk.bounds.maxX - chunk.bounds.minX,
+              y: 1,
+              z: chunk.bounds.maxZ - chunk.bounds.minZ,
+            },
+          ).setFriction(1.1),
+          body,
+        );
+      }
+      return;
+    }
     const size = this.worldSize();
     const groundBody = this.physics.createRigidBody(
       RAPIER.RigidBodyDesc.fixed().setTranslation(
@@ -627,44 +751,68 @@ export class WorldEngine {
   }
 
   private buildChunkPhysics(chunk: WorldChunkPlan): void {
-    if (!this.definition.world.settings.buildingCollisions) return;
     const bodies: RAPIER.RigidBody[] = [];
-    for (const index of chunk.buildingIndexes) {
-      const building = this.plan.buildings[index];
-      const outer = building?.rings[0];
-      if (!building || !outer || outer.length === 0) continue;
-      const xs = outer.map((point) => point.x);
-      const zs = outer.map((point) => point.z);
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minZ = Math.min(...zs);
-      const maxZ = Math.max(...zs);
-      const halfX = Math.max(0.2, (maxX - minX) / 2);
-      const halfZ = Math.max(0.2, (maxZ - minZ) / 2);
-      const body = this.physics.createRigidBody(
-        RAPIER.RigidBodyDesc.fixed().setTranslation(
-          (minX + maxX) / 2,
-          building.height / 2,
-          (minZ + maxZ) / 2,
-        ),
-      );
+    const addSurfaceCollider = (surface: SurfaceMeshPlan, friction: number) => {
+      if (surface.positions.length === 0 || surface.indices.length === 0)
+        return;
+      const body = this.physics.createRigidBody(RAPIER.RigidBodyDesc.fixed());
       this.physics.createCollider(
-        RAPIER.ColliderDesc.cuboid(
-          halfX,
-          building.height / 2,
-          halfZ,
-        ).setFriction(0.8),
+        RAPIER.ColliderDesc.trimesh(
+          new Float32Array(surface.positions),
+          new Uint32Array(surface.indices),
+        ).setFriction(friction),
         body,
       );
       bodies.push(body);
+    };
+    for (const index of chunk.roadIndexes) {
+      const road = this.plan.roads[index];
+      if (road) addSurfaceCollider(road.mesh, 1.18);
+    }
+    for (const index of chunk.junctionIndexes) {
+      const junction = this.plan.junctions[index];
+      if (junction) addSurfaceCollider(junction.mesh, 1.18);
+    }
+    if (this.definition.world.settings.buildingCollisions) {
+      for (const index of chunk.buildingIndexes) {
+        const building = this.plan.buildings[index];
+        const outer = building?.rings[0];
+        if (!building || !outer || outer.length === 0) continue;
+        const xs = outer.map((point) => point.x);
+        const zs = outer.map((point) => point.z);
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minZ = Math.min(...zs);
+        const maxZ = Math.max(...zs);
+        const halfX = Math.max(0.2, (maxX - minX) / 2);
+        const halfZ = Math.max(0.2, (maxZ - minZ) / 2);
+        const body = this.physics.createRigidBody(
+          RAPIER.RigidBodyDesc.fixed().setTranslation(
+            (minX + maxX) / 2,
+            building.baseHeight + building.height / 2,
+            (minZ + maxZ) / 2,
+          ),
+        );
+        this.physics.createCollider(
+          RAPIER.ColliderDesc.cuboid(
+            halfX,
+            building.height / 2,
+            halfZ,
+          ).setFriction(0.8),
+          body,
+        );
+        bodies.push(body);
+      }
     }
     this.chunkBodies.set(chunk.id, bodies);
   }
 
   private applyConfiguredSpawn(reset: boolean): void {
     const pose = resolveSpawnPose(this.plan, this.definition.overrides);
-    this.spawnPosition.set(pose.x, 1.4, pose.z);
-    this.spawnRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), pose.yaw);
+    this.spawnPosition.set(pose.x, pose.y + 1.4, pose.z);
+    this.spawnRotation.setFromEuler(
+      new THREE.Euler(pose.pitch, pose.yaw, 0, "YXZ"),
+    );
     this.safePosition.copy(this.spawnPosition);
     this.safeRotation.copy(this.spawnRotation);
     if (reset) this.resetVehicle(true);
@@ -676,8 +824,10 @@ export class WorldEngine {
     visual: VehicleVisual;
   } {
     const pose = resolveSpawnPose(this.plan, this.definition.overrides);
-    this.spawnPosition.set(pose.x, 1.4, pose.z);
-    this.spawnRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), pose.yaw);
+    this.spawnPosition.set(pose.x, pose.y + 1.4, pose.z);
+    this.spawnRotation.setFromEuler(
+      new THREE.Euler(pose.pitch, pose.yaw, 0, "YXZ"),
+    );
     this.safePosition.copy(this.spawnPosition);
     this.safeRotation.copy(this.spawnRotation);
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
@@ -853,6 +1003,14 @@ export class WorldEngine {
   }
 
   private targetInput(): VehicleInput {
+    if (this.mode === "inspect") {
+      return {
+        throttle: 0,
+        brake: 0.75,
+        steering: 0,
+        handbrake: true,
+      };
+    }
     const gamepad = this.gamepadInput();
     if (gamepad) {
       this.inputSource = "gamepad";
@@ -925,10 +1083,16 @@ export class WorldEngine {
     const inside =
       Math.abs(position.x - size.centerX) < size.width / 2 + 20 &&
       Math.abs(position.z - size.centerZ) < size.depth / 2 + 20;
+    const terrainHeight = sampleTerrainPlan(
+      this.plan.terrain,
+      position.x,
+      position.z,
+    );
+    const relativeHeight = position.y - terrainHeight;
     if (
       isVehiclePoseSafe({
         uprightDot,
-        height: position.y,
+        height: relativeHeight,
         insideWorld: inside,
       })
     ) {
@@ -938,7 +1102,7 @@ export class WorldEngine {
         this.safeElapsed = 0;
         this.safePosition.set(
           position.x,
-          Math.max(1.1, position.y),
+          Math.max(terrainHeight + 1.1, position.y),
           position.z,
         );
         this.safeRotation.copy(quaternion);
@@ -946,7 +1110,7 @@ export class WorldEngine {
     } else {
       this.safeElapsed = 0;
       this.unsafeElapsed += deltaSeconds;
-      if (shouldRecoverVehicle(this.unsafeElapsed, position.y)) {
+      if (shouldRecoverVehicle(this.unsafeElapsed, relativeHeight)) {
         this.recoveryCount += 1;
         this.resetVehicle();
       }
@@ -995,6 +1159,18 @@ export class WorldEngine {
       fps: this.fps,
       chunks: this.plan.chunks.length,
       triangles: planTriangles(this.plan),
+      terrainTriangles:
+        (this.plan.terrain?.chunks.length ?? 0) *
+        (this.plan.terrain?.cellsPerChunk ?? 0) ** 2 *
+        2,
+      terrainChunks: this.plan.terrain?.chunks.length ?? 0,
+      elevationProvider: this.plan.terrain?.provider ?? "flat legacy ground",
+      elevationRange: this.plan.terrain
+        ? this.plan.terrain.sourceMaxHeight - this.plan.terrain.sourceMinHeight
+        : 0,
+      vehicleElevation: Number(
+        (this.chassis?.translation?.().y ?? this.spawnPosition.y).toFixed(1),
+      ),
       buildHash: this.plan.buildHash,
       buildDurationMs: Math.round(this.buildDurationMs),
       diagnosticCount: this.plan.diagnostics.length,

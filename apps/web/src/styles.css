@@ -911,6 +911,14 @@ button:disabled {
   color: #c8d5cd;
   font-size: 10px;
   text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.attribution a {
+  color: inherit;
+  text-decoration: none;
 }
 
 @media (max-width: 840px) {

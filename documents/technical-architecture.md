@@ -40,6 +40,7 @@ flowchart LR
     UI --> API
     API --> Geocoder[Configured geocoder]
     API --> OSM[Configured OSM source]
+    API --> DEM[Configured elevation source]
 ```
 
 Docker does not render the 3D scene. The host browser uses the user's GPU;
@@ -63,17 +64,20 @@ containers provide the application, API, database, and cached data.
 
 - Geocoding proxy and cache
 - OSM source adapter and request limits
+- Elevation-provider adapter, batching, coverage fallback, and attribution
 - Import jobs and server-sent progress events
 - OSM-to-GeoJSON normalization
 - PostGIS geometry validation and clipping
 - World/project persistence
 - Source-snapshot and attribution records
+- Immutable DEM grids and elevation content hashes
 - Health, readiness, and structured diagnostics
 
 ### PostgreSQL and PostGIS
 
 - Project metadata and settings
 - WGS84 source geometry
+- Elevation snapshot JSON and vertical-datum metadata
 - Spatial indexes and boundary queries
 - Validated and normalized feature records
 - User overrides and build records
@@ -110,12 +114,13 @@ User submits search
   -> API geocoder adapter
   -> cached result returned
   -> user selects bounding box
-  -> API OSM adapter creates source snapshot
+  -> API fetches OSM and elevation concurrently
+  -> API creates one immutable source snapshot
   -> normalization and PostGIS validation
   -> normalized WorldDefinition returned
     -> browser Worker creates a serializable deterministic WorldPlan
-  -> Three.js creates visible meshes
-  -> Rapier creates simplified colliders
+  -> Three.js creates visible meshes from the WorldPlan
+  -> Rapier creates matching heightfield and road colliders from the WorldPlan
 ```
 
 ## Architectural invariants
@@ -133,6 +138,9 @@ User submits search
 11. A feature has one deterministic owner chunk; junction dependencies map the
     source feature to every chunk that must be rebuilt after an edit.
 12. Worker messages and override payloads are explicitly versioned.
+13. An elevation grid is immutable and its content hash contributes to build
+    identity.
+14. Terrain rendering and collision consume the same x-major chunk heights.
 
 ## Deliberate simplifications
 
@@ -142,7 +150,8 @@ User submits search
 - GPU buffer upload and Rapier object creation remain on the main thread
 - Worker output uses structured-cloneable arrays rather than a persistent mesh
   cache or streaming binary format
-- Flat terrain precedes elevation and imagery
+- Tunnel overhangs use a diagnosed open-cut representation while terrain is a
+  heightfield
 - Generated meshes are caches, not primary records
 
 ## Evolution points
@@ -152,7 +161,7 @@ Interfaces should permit, without rewriting the editor:
 - Moving imports into a separate worker container
 - Replacing public Overpass with local `.osm.pbf` extracts
 - Replacing Nominatim with a managed or self-hosted geocoder
-- Adding a DEM/elevation provider
+- Adding global or self-hosted DEM providers behind the elevation contract
 - Adding imagery with a compatible license
 - Streaming large worlds by chunk
 - Exporting generated geometry and attribution manifests

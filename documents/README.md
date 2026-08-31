@@ -47,6 +47,7 @@ MVP from later roadmap items.
 - [ADR-0002: Local ENU world coordinates](decisions/0002-local-enu-coordinates.md)
 - [ADR-0003: Immutable source snapshots and overrides](decisions/0003-source-snapshots-and-overrides.md)
 - [ADR-0004: Worker-built deterministic chunks](decisions/0004-worker-built-deterministic-chunks.md)
+- [ADR-0005: Immutable elevation snapshots and shared heightfields](decisions/0005-immutable-elevation-snapshots-and-shared-heightfields.md)
 
 ## Documentation conventions
 

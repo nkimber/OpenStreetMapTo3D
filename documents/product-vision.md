@@ -1,6 +1,6 @@
 # Product vision
 
-Status: Draft
+Status: Active
 
 Last updated: 2026-08-30
 
@@ -55,11 +55,12 @@ The MVP must allow a user to:
 2. Select a neighborhood-sized rectangular boundary.
 3. Preview the available roads and buildings.
 4. Import and store an OpenStreetMap source snapshot.
-5. Generate flat terrain, road surfaces, and extruded buildings.
+5. Capture an elevation snapshot and generate terrain, sloped road surfaces,
+   and extruded buildings.
 6. Place a vehicle on a selected road.
 7. Drive using keyboard controls and reset the vehicle.
 8. Save and reopen the generated project.
-9. See required OpenStreetMap attribution.
+9. See required OpenStreetMap and elevation attribution.
 
 ## MVP non-goals
 
@@ -79,7 +80,7 @@ The MVP must allow a user to:
 - The generated road layout is recognizable relative to the OSM source.
 - The car can traverse intersections without collider seams or unstable jumps.
 - Saving and reopening produces an equivalent world.
-- Automated tests run without contacting public OSM services.
+- Automated tests run without contacting public OSM or elevation services.
 - Attribution remains visible in the application and in exported metadata.
 
 ## Visual direction

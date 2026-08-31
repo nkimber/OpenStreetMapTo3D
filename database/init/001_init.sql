@@ -28,8 +28,18 @@ CREATE TABLE IF NOT EXISTS source_snapshots (
   license_url text NOT NULL,
   raw_schema_version integer NOT NULL DEFAULT 1,
   normalized_schema_version integer NOT NULL DEFAULT 1,
+  elevation_snapshot jsonb,
+  elevation_content_hash text,
   UNIQUE (provider, content_hash)
 );
+
+-- migrateDatabase executes this idempotent file on every API start, so these
+-- additions also upgrade development volumes created before elevation support.
+ALTER TABLE source_snapshots
+  ADD COLUMN IF NOT EXISTS elevation_snapshot jsonb;
+
+ALTER TABLE source_snapshots
+  ADD COLUMN IF NOT EXISTS elevation_content_hash text;
 
 CREATE TABLE IF NOT EXISTS osm_features (
   snapshot_id uuid NOT NULL REFERENCES source_snapshots(id) ON DELETE CASCADE,

@@ -11,6 +11,11 @@ const config: AppConfig = {
   PUBLIC_APP_URL: "http://localhost:5173",
   NOMINATIM_BASE_URL: "https://nominatim.openstreetmap.org",
   OVERPASS_BASE_URL: "https://overpass-api.de/api/interpreter",
+  USGS_ELEVATION_BASE_URL:
+    "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples",
+  ELEVATION_SAMPLE_SPACING_METERS: 10,
+  ELEVATION_MAX_GRID_DIMENSION: 129,
+  ELEVATION_SAMPLE_BATCH_SIZE: 900,
   OSM_USER_AGENT: "OpenStreetMapTo3D/test",
   OSM_CACHE_DIRECTORY: ".data/test-osm",
   MAX_IMPORT_AREA_SQUARE_KM: 4,

@@ -9,6 +9,7 @@ coverage/
 .playwright-cli/
 playwright-report/
 test-results/
+output/
 
 # Local configuration and secrets
 .env

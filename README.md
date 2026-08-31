@@ -34,15 +34,20 @@ intentionally want to remove local projects and cached source data.
 - Rectangular MapLibre selection with imported feature preview
 - Rate-limited Nominatim and bounded Overpass adapters
 - Immutable, content-addressed OSM snapshots in PostgreSQL/PostGIS
-- Deterministic local-ENU roads, land, and extruded buildings
+- Immutable elevation grids from USGS 3DEP, plus a deterministic offline hill
+  fixture and diagnosed flat fallback outside coverage
+- Deterministic local-ENU terrain, grade-smoothed roads, terrain-conformed land,
+  and vertically extruded buildings
 - Cancelable Web Worker generation into deterministic 256 m chunks
 - Joined road strips, layer-aware intersections/end caps, and provenance
 - Three.js inspect mode and fixed-step Rapier ray-cast vehicle driving
+- Shared Three.js/Rapier heightfields, drivable road strips, bridge decks,
+  tunnel open cuts, and elevation-aware vehicle spawn/recovery
 - Keyboard and standard-gamepad controls with safe-pose recovery
 - Persistent height, width, visibility, and exact road-spawn overrides
 - Undo/redo and affected-chunk-only rebuilds in the live editor
 - Build hash, worker timing, frame, triangle, recovery, and diagnostic telemetry
-- Saved/recent worlds and visible OpenStreetMap attribution
+- Saved/recent worlds with visible OpenStreetMap and elevation attribution
 - Fully offline sample data and representative geometry/physics fixtures
 
 ## Verify it
@@ -71,4 +76,5 @@ testing strategy, and delivery roadmap.
 
 Application source code is licensed under the MIT License. OpenStreetMap data
 is provided under the Open Data Commons Open Database License (ODbL) and must
-be attributed to OpenStreetMap contributors.
+be attributed to OpenStreetMap contributors. The initial USGS 3DEP elevation
+source is public domain and is attributed separately in generated worlds.

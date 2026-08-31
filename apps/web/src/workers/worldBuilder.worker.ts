@@ -58,6 +58,10 @@ worker.addEventListener("message", (event: MessageEvent<unknown>) => {
         chunkSize: request.chunkSize,
         sourceSnapshotId: request.definition.world.snapshotId,
         generatorVersion: WORLD_GENERATOR_VERSION,
+        bounds: request.definition.world.bounds,
+        ...(request.definition.elevation
+          ? { elevation: request.definition.elevation }
+          : {}),
       },
     );
     progress(jobId, "roads", 72);

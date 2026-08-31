@@ -100,6 +100,11 @@ can provide the last event ID and retrieve subsequent durable status.
 - Compressed-cache location
 - Attribution text and license URL
 - Raw and normalized schema versions
+- Immutable elevation snapshot JSON and elevation content hash
+
+The elevation JSON records provider, dataset, retrieval time, WGS84 bounds,
+south-to-north/west-to-east grid dimensions, sample spacing, absolute metre
+heights, min/max values, vertical datum, attribution, and its SHA-256 hash.
 
 Source snapshots are immutable.
 
@@ -158,11 +163,15 @@ interface WorldDefinition {
   schemaVersion: number;
   world: WorldSummary;
   attribution: Attribution[];
+  elevation?: ElevationSnapshot;
   features: NormalizedFeature[];
   overrides: WorldOverride[];
   diagnostics: Diagnostic[];
 }
 ```
+
+`SnapshotPreview` exposes only the elevation summary; the complete immutable
+grid is returned with `WorldDefinition` for deterministic worker generation.
 
 Large definitions may later use streamed chunks or FlatGeobuf. Gzipped JSON or
 GeoJSON is sufficient for the bounded MVP area.

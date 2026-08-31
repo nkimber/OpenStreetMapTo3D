@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  ElevationSnapshot,
   NormalizedFeature,
   SnapshotPreview,
   WorldCreateRequest,
@@ -7,9 +8,10 @@ import type {
   WorldOverride,
   WorldSummary,
 } from "@osm3d/contracts";
+import { ElevationSnapshotSchema } from "@osm3d/contracts";
 import type { DatabasePool } from "./database.js";
 
-const GENERATOR_VERSION = "0.2.0";
+const GENERATOR_VERSION = "0.3.0";
 
 interface WorldRow {
   id: string;
@@ -49,6 +51,19 @@ function featureRowToDto(row: FeatureRow): NormalizedFeature {
   };
 }
 
+function elevationDiagnostics(elevation: ElevationSnapshot | undefined) {
+  return elevation?.provider === "flat-fallback"
+    ? [
+        {
+          code: "elevation.flat-fallback",
+          severity: "warning" as const,
+          message:
+            "This source snapshot has no DEM coverage and uses flat terrain.",
+        },
+      ]
+    : [];
+}
+
 async function getSnapshotFeatures(
   pool: DatabasePool,
   snapshotId: string,
@@ -67,14 +82,21 @@ export async function getSnapshotPreview(
   snapshotId: string,
 ): Promise<SnapshotPreview | undefined> {
   const [snapshotResult, features] = await Promise.all([
-    pool.query<{ attribution: string; license_url: string }>(
-      "SELECT attribution, license_url FROM source_snapshots WHERE id = $1",
+    pool.query<{
+      attribution: string;
+      license_url: string;
+      elevation_snapshot: unknown | null;
+    }>(
+      "SELECT attribution, license_url, elevation_snapshot FROM source_snapshots WHERE id = $1",
       [snapshotId],
     ),
     getSnapshotFeatures(pool, snapshotId),
   ]);
   const snapshot = snapshotResult.rows[0];
   if (!snapshot) return undefined;
+  const elevation = snapshot.elevation_snapshot
+    ? ElevationSnapshotSchema.parse(snapshot.elevation_snapshot)
+    : undefined;
   const count = (kind: NormalizedFeature["kind"]) =>
     features.filter((feature) => feature.kind === kind).length;
   return {
@@ -85,9 +107,27 @@ export async function getSnapshotPreview(
         url: snapshot.license_url,
         license: "ODbL 1.0",
       },
+      ...(elevation ? [elevation.attribution] : []),
     ],
+    ...(elevation
+      ? {
+          elevation: {
+            provider: elevation.provider,
+            dataset: elevation.dataset,
+            columns: elevation.columns,
+            rows: elevation.rows,
+            spacingMeters: elevation.spacingMeters,
+            verticalDatum: elevation.verticalDatum,
+            minHeight: elevation.minHeight,
+            maxHeight: elevation.maxHeight,
+          },
+        }
+      : {}),
     features,
-    diagnostics: features.flatMap((feature) => feature.warnings),
+    diagnostics: [
+      ...features.flatMap((feature) => feature.warnings),
+      ...elevationDiagnostics(elevation),
+    ],
     stats: {
       roads: count("road"),
       buildings: count("building"),
@@ -216,8 +256,12 @@ export async function getWorldDefinition(
        FROM world_overrides WHERE world_project_id = $1 ORDER BY created_at`,
       [id],
     ),
-    pool.query<{ attribution: string; license_url: string }>(
-      `SELECT attribution, license_url FROM source_snapshots WHERE id = $1`,
+    pool.query<{
+      attribution: string;
+      license_url: string;
+      elevation_snapshot: unknown | null;
+    }>(
+      `SELECT attribution, license_url, elevation_snapshot FROM source_snapshots WHERE id = $1`,
       [world.snapshotId],
     ),
   ]);
@@ -230,8 +274,11 @@ export async function getWorldDefinition(
     payload: row.payload,
   }));
   const snapshot = snapshotResult.rows[0];
+  const elevation: ElevationSnapshot | undefined = snapshot?.elevation_snapshot
+    ? ElevationSnapshotSchema.parse(snapshot.elevation_snapshot)
+    : undefined;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     world,
     attribution: [
       {
@@ -239,10 +286,15 @@ export async function getWorldDefinition(
         url: snapshot?.license_url ?? "https://www.openstreetmap.org/copyright",
         license: "ODbL 1.0",
       },
+      ...(elevation ? [elevation.attribution] : []),
     ],
+    ...(elevation ? { elevation } : {}),
     features,
     overrides,
-    diagnostics: features.flatMap((feature) => feature.warnings),
+    diagnostics: [
+      ...features.flatMap((feature) => feature.warnings),
+      ...elevationDiagnostics(elevation),
+    ],
   };
 }
 

@@ -51,6 +51,75 @@ export const AttributionSchema = z.object({
 
 export type Attribution = z.infer<typeof AttributionSchema>;
 
+export const ElevationProviderIdSchema = z.enum([
+  "fixture",
+  "usgs-3dep",
+  "flat-fallback",
+]);
+
+export type ElevationProviderId = z.infer<typeof ElevationProviderIdSchema>;
+
+/**
+ * Immutable, row-major DEM grid. Row zero is the southern edge and values in
+ * each row run west to east. Heights are absolute metres in verticalDatum.
+ */
+export const ElevationSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    provider: ElevationProviderIdSchema,
+    dataset: z.string().min(1),
+    retrievedAt: z.iso.datetime(),
+    bounds: Wgs84BoundsSchema,
+    columns: z.number().int().min(2).max(513),
+    rows: z.number().int().min(2).max(513),
+    spacingMeters: z.object({
+      eastWest: z.number().positive(),
+      northSouth: z.number().positive(),
+    }),
+    heights: z.array(z.number().finite()).max(513 * 513),
+    noDataValue: z.number().finite().optional(),
+    verticalDatum: z.string().min(1),
+    units: z.literal("meters"),
+    minHeight: z.number().finite(),
+    maxHeight: z.number().finite(),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    attribution: AttributionSchema,
+  })
+  .superRefine((snapshot, context) => {
+    if (snapshot.heights.length !== snapshot.columns * snapshot.rows) {
+      context.addIssue({
+        code: "custom",
+        path: ["heights"],
+        message: "Elevation grid dimensions must match the height count.",
+      });
+    }
+    if (snapshot.maxHeight < snapshot.minHeight) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxHeight"],
+        message: "Maximum elevation must be at least the minimum elevation.",
+      });
+    }
+  });
+
+export type ElevationSnapshot = z.infer<typeof ElevationSnapshotSchema>;
+
+export const ElevationSummarySchema = z.object({
+  provider: ElevationProviderIdSchema,
+  dataset: z.string().min(1),
+  columns: z.number().int().min(2).max(513),
+  rows: z.number().int().min(2).max(513),
+  spacingMeters: z.object({
+    eastWest: z.number().positive(),
+    northSouth: z.number().positive(),
+  }),
+  verticalDatum: z.string().min(1),
+  minHeight: z.number().finite(),
+  maxHeight: z.number().finite(),
+});
+
+export type ElevationSummary = z.infer<typeof ElevationSummarySchema>;
+
 export const FeatureKindSchema = z.enum([
   "road",
   "building",
@@ -126,6 +195,7 @@ export type ImportJob = z.infer<typeof ImportJobSchema>;
 export const SnapshotPreviewSchema = z.object({
   snapshotId: z.uuid(),
   attribution: z.array(AttributionSchema),
+  elevation: ElevationSummarySchema.optional(),
   features: z.array(NormalizedFeatureSchema),
   diagnostics: z.array(DiagnosticSchema),
   stats: z.object({
@@ -189,6 +259,7 @@ export const WorldDefinitionSchema = z.object({
   schemaVersion: z.number().int().positive(),
   world: WorldSummarySchema,
   attribution: z.array(AttributionSchema),
+  elevation: ElevationSnapshotSchema.optional(),
   features: z.array(NormalizedFeatureSchema),
   overrides: z.array(WorldOverrideSchema),
   diagnostics: z.array(DiagnosticSchema),

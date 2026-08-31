@@ -33,6 +33,11 @@ const emptyStats: EngineStats = {
   fps: 0,
   chunks: 0,
   triangles: 0,
+  terrainTriangles: 0,
+  terrainChunks: 0,
+  elevationProvider: "pending",
+  elevationRange: 0,
+  vehicleElevation: 0,
   buildHash: "pending",
   buildDurationMs: 0,
   diagnosticCount: 0,
@@ -240,14 +245,16 @@ export function WorldWorkspace({
   const saveOverride = async (override: WorldOverride) => {
     const previous = cloneOverrides(definitionRef.current.overrides);
     const next = replaceOverride(previous, override);
-    if (!(await persistOverrides(next))) return;
+    const hidesSelection =
+      override.operation === "set-visible" &&
+      override.payload.visible === false;
+    if (hidesSelection) setSelection({});
+    if (!(await persistOverrides(next))) {
+      if (hidesSelection) setSelection({ sourceId: override.targetId });
+      return;
+    }
     setUndoStack((stack) => [...stack.slice(-49), previous]);
     setRedoStack([]);
-    if (
-      override.operation === "set-visible" &&
-      override.payload.visible === false
-    )
-      setSelection({});
   };
 
   const undo = async () => {
@@ -402,6 +409,22 @@ export function WorldWorkspace({
           <div>
             <dt>Road triangles</dt>
             <dd>{stats.triangles.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>Terrain triangles</dt>
+            <dd>{stats.terrainTriangles.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>Elevation source</dt>
+            <dd>{stats.elevationProvider}</dd>
+          </div>
+          <div>
+            <dt>Elevation range</dt>
+            <dd>{stats.elevationRange.toFixed(1)} m</dd>
+          </div>
+          <div>
+            <dt>Car elevation</dt>
+            <dd>{stats.vehicleElevation.toFixed(1)} m</dd>
           </div>
           <div>
             <dt>Worker build</dt>
@@ -572,17 +595,18 @@ export function WorldWorkspace({
         </p>
       )}
 
-      <a
-        className="attribution glass-panel"
-        href={
-          definition.attribution[0]?.url ??
-          "https://www.openstreetmap.org/copyright"
-        }
-        target="_blank"
-        rel="noreferrer"
-      >
-        {definition.attribution[0]?.text ?? "© OpenStreetMap contributors"}
-      </a>
+      <div className="attribution glass-panel">
+        {definition.attribution.map((attribution) => (
+          <a
+            key={`${attribution.url}:${attribution.text}`}
+            href={attribution.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {attribution.text}
+          </a>
+        ))}
+      </div>
     </main>
   );
 }

@@ -12,6 +12,28 @@ const ConfigSchema = z.object({
   PUBLIC_APP_URL: z.url().default("http://localhost:5173"),
   NOMINATIM_BASE_URL: z.url().default("https://nominatim.openstreetmap.org"),
   OVERPASS_BASE_URL: z.url().default("https://overpass-api.de/api/interpreter"),
+  USGS_ELEVATION_BASE_URL: z
+    .url()
+    .default(
+      "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples",
+    ),
+  ELEVATION_SAMPLE_SPACING_METERS: z.coerce
+    .number()
+    .min(4)
+    .max(100)
+    .default(10),
+  ELEVATION_MAX_GRID_DIMENSION: z.coerce
+    .number()
+    .int()
+    .min(17)
+    .max(257)
+    .default(129),
+  ELEVATION_SAMPLE_BATCH_SIZE: z.coerce
+    .number()
+    .int()
+    .min(25)
+    .max(950)
+    .default(900),
   OSM_USER_AGENT: z
     .string()
     .min(8)

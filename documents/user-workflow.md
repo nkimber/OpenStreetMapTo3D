@@ -63,6 +63,8 @@ After the preview import, the application reports:
 - Buildings requiring estimated heights
 - Unsupported or invalid features skipped
 - Whether terrain elevation is available
+- Elevation provider, vertical range, and whether a diagnosed flat fallback was
+  required
 
 Diagnostics must distinguish source facts from generated assumptions. The
 default action remains **Generate world**; advanced settings are optional.
@@ -78,8 +80,9 @@ MVP settings:
 - Include or exclude building collision
 - Deterministic generation seed
 
-Later settings may include elevation, vegetation density, roof generation,
-imagery, weather, and road-surface presets.
+Later settings may include terrain density, vegetation density, roof generation,
+imagery, weather, and road-surface presets. Elevation is captured automatically
+with the source snapshot so a saved world does not change when a provider does.
 
 ## 6. Generate
 
@@ -139,12 +142,17 @@ Drive mode displays speed, safe-reset and spawn-return controls, gamepad and
 steering settings, a chase camera, and OpenStreetMap attribution. Editing
 controls are hidden while physics is active.
 
+The car spawns at the selected road's sampled height and pitch. Ground roads,
+bridge decks, and diagnosed tunnel open cuts have matching visual and physics
+surfaces, so uphill and downhill grades affect driving.
+
 ## 10. Save and reopen
 
 A saved project contains:
 
 - Geographic boundary and local-world anchor
 - Source snapshot reference and attribution
+- Elevation snapshot hash, vertical datum, and attribution
 - Generation settings and generator version
 - User overrides
 - Vehicle preset and spawn point
@@ -159,5 +167,7 @@ remain the authoritative representation.
 - **No roads found:** stop before Drive mode and let the user adjust the area.
 - **Missing heights:** use documented defaults and show an estimation count.
 - **External provider unavailable:** use a cached snapshot or sample fixture.
+- **Elevation unavailable or outside USGS coverage:** keep the OSM import, use a
+  diagnosed flat fallback, and display that limitation before generation.
 - **Generation exceeds memory:** cancel safely and recommend a smaller area.
 - **Vehicle becomes stuck:** reset to the last known stable road position.

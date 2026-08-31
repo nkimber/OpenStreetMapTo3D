@@ -32,6 +32,10 @@ services:
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:5173}
       NOMINATIM_BASE_URL: ${NOMINATIM_BASE_URL:-https://nominatim.openstreetmap.org}
       OVERPASS_BASE_URL: ${OVERPASS_BASE_URL:-https://overpass-api.de/api/interpreter}
+      USGS_ELEVATION_BASE_URL: ${USGS_ELEVATION_BASE_URL:-https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples}
+      ELEVATION_SAMPLE_SPACING_METERS: ${ELEVATION_SAMPLE_SPACING_METERS:-10}
+      ELEVATION_MAX_GRID_DIMENSION: ${ELEVATION_MAX_GRID_DIMENSION:-129}
+      ELEVATION_SAMPLE_BATCH_SIZE: ${ELEVATION_SAMPLE_BATCH_SIZE:-900}
       OSM_USER_AGENT: ${OSM_USER_AGENT:-OpenStreetMapTo3D/0.1 local-development}
       OSM_CACHE_DIRECTORY: /data/osm
       MAX_IMPORT_AREA_SQUARE_KM: ${MAX_IMPORT_AREA_SQUARE_KM:-4}

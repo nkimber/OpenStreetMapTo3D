@@ -1,8 +1,8 @@
 # Glossary
 
-Status: Draft
+Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 ## Build
 
@@ -20,6 +20,17 @@ Chunks support culling, incremental rebuilds, and future streaming.
 A structured information, warning, or error record with a stable code, safe
 message, optional source feature, and severity.
 
+## DEM
+
+Digital Elevation Model: a regular grid of ground heights. The project stores
+DEM values as immutable absolute metres with bounds and a vertical datum, then
+converts them to local relative heights during generation.
+
+## Elevation snapshot
+
+The immutable DEM grid and metadata captured during an import, including
+provider, dataset, spacing, vertical datum, attribution, and content hash.
+
 ## ENU
 
 East-North-Up, a local tangent coordinate frame measured in metres relative to a
@@ -34,6 +45,11 @@ polygon, or barrier. A feature retains its source identity and original tags.
 
 A value introduced by the application when source data is incomplete, such as a
 default building height or road width. Assumptions are not source facts.
+
+## Heightfield
+
+A regular grid used to build both the visible terrain surface and its Rapier
+collision shape. It cannot represent caves or overhangs.
 
 ## Local world
 
@@ -67,8 +83,9 @@ provenance. It is distinct from a generation assumption.
 
 ## Source snapshot
 
-An immutable record of a provider response, query, retrieval time, content hash,
-license, and attribution. Refreshing creates a new snapshot.
+An immutable record of OSM and elevation provider responses, query, retrieval
+time, content hashes, licenses, and attribution. Refreshing creates a new
+snapshot.
 
 ## WGS84
 
@@ -79,4 +96,5 @@ PostGIS stores source geometry as EPSG:4326.
 
 The versioned data transfer object sent to the browser containing the geographic
 anchor, normalized features, generation settings, overrides, diagnostics, and
-attribution required to generate a world.
+attribution required to generate a world, plus the immutable elevation snapshot
+when available.

@@ -17,13 +17,20 @@ Implemented capabilities:
   selection
 - Offline fixture and live bounded Overpass imports
 - Content-addressed compressed source cache and immutable snapshot records
+- Immutable elevation snapshots with USGS 3DEP, deterministic synthetic fixture,
+  and a diagnosed flat fallback outside coverage
 - OSM road, building, land, water, and multipolygon normalization
 - Preview overlays and source-coverage counts before generation
 - WGS84/ECEF/local-ENU coordinate conversion
 - Cancelable, versioned Web Worker builds with deterministic 256 m chunks and a
   stable 64-bit build hash
 - Joined/mitered road strips, layer-aware intersection and end-cap surfaces,
-  flat ground, land areas, and extruded building meshes
+  grade-smoothed 3D road profiles, blended shoulders, terrain-conformed land,
+  and extruded building meshes based at median footprint elevation
+- Deterministic 256 m terrain chunks with shared edges, 8 m Three.js meshes,
+  matching Rapier heightfields, and elevation-aware build hashes
+- Separate bridge deck geometry/colliders and drivable diagnosed open cuts for
+  tunnels that cannot be represented as heightfield overhangs
 - Height and width provenance (`source`, `levels`/`lanes`, class/fallback, or
   `override`) plus non-fatal generation diagnostics
 - Inspect and Drive modes with fixed-step Rapier vehicle physics
@@ -34,7 +41,8 @@ Implemented capabilities:
 - Undo/redo, hidden-feature restoration, and affected-chunk-only visual and
   collision rebuilds
 - Build/performance telemetry for frame rate, triangles, worker duration,
-  long frames, diagnostics, recoveries, chunks rebuilt, and deterministic hash
+  terrain source/range/car elevation, long frames, diagnostics, recoveries,
+  chunks rebuilt, and deterministic hash
 - PostGIS migrations, structured validation errors, health/readiness endpoints,
   source attribution, linting, unit/fixture/physics tests, browser coverage, and
   CI
@@ -42,8 +50,8 @@ Implemented capabilities:
 
 ## Verification snapshot
 
-The current automated suite contains 27 unit, geometry, and Rapier replay tests
-across seven test files, plus the Chromium end-to-end workflow. The expected
+The current automated suite contains 34 unit, geometry, provider, and Rapier
+tests across eleven test files, plus the Chromium end-to-end workflow. The expected
 gates are:
 
 ```text
@@ -56,19 +64,21 @@ pnpm test:e2e
 docker build --target production .
 ```
 
-The browser test imports the bundled sample, verifies a one-chunk edit rebuild,
-undo/redo, hide/show, capped driving, resets, and persisted state after reopen.
+The browser test imports the bundled sample, verifies elevation source/range and
+attribution, a one-chunk edit rebuild, undo/redo, hide/show, capped driving,
+resets, and persisted state after reopen.
 It does not contact geocoding or Overpass. Base-map tiles are an optional
 external visual layer and are not an input to world generation.
 
 ## Current limitations
 
-- Terrain and road physics are flat. The visible road layer is decorative over
-  one continuous ground collider; elevation is Phase 5 work.
+- Live elevation currently uses USGS 3DEP. Areas without coverage receive a
+  diagnosed flat fallback; a global DEM adapter remains future work.
 - Intersections use deterministic overlap discs and joined centerline strips,
   not lane-level topology, markings, turn rules, or curb geometry.
-- Bridge and tunnel layers are kept visually separate and diagnosed, but their
-  clearance relative to future terrain is approximate.
+- Bridges have inferred raised decks, but explicit `ele`, `height`, and endpoint
+  structure metadata are not yet fully interpreted. Tunnels are open cuts rather
+  than closed overhangs because Rapier heightfields cannot represent caves.
 - Building collision uses bounding boxes and generated roofs are flat.
 - The Worker returns serializable geometry plans. Three.js buffer upload and
   Rapier object creation still occur on the main thread.
@@ -79,4 +89,4 @@ external visual layer and are not an input to world generation.
 - Public provider availability and OSM feature coverage vary; the fixture is
   the reproducible fallback.
 
-The remaining limitations align with [Phase 5 and later](delivery-roadmap.md).
+The remaining limitations align with [Phase 5B and later](delivery-roadmap.md).

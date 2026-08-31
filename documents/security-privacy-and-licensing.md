@@ -1,6 +1,6 @@
 # Security, privacy, and licensing
 
-Status: Draft
+Status: Active
 
 Last updated: 2026-08-30
 
@@ -91,6 +91,19 @@ License (ODbL). The application must:
 Authoritative information is available at
 [OpenStreetMap Copyright and License](https://www.openstreetmap.org/copyright).
 
+## Elevation data
+
+The initial live elevation adapter uses the USGS 3D Elevation Program (3DEP)
+ImageServer. 3DEP products are public domain, but the application still records
+and displays the dataset/provider attribution and vertical datum. Provider
+availability and coverage are distinct from licensing; an uncovered area uses a
+diagnosed flat fallback rather than an unlicensed substitute.
+
+The server batches samples, limits grid dimensions, uses a configured provider
+URL, and never accepts an elevation endpoint from the browser. A future global
+DEM adapter must document its data license and redistribution/attribution terms
+before it can become a default.
+
 ## Public-service policies
 
 Using open data does not grant unlimited use of community-operated servers.
@@ -100,6 +113,7 @@ Implementation must follow the current policies for:
 - [OSM API](https://operations.osmfoundation.org/policies/api/)
 - Any selected Overpass instance
 - Any future tile, elevation, or imagery provider
+- [USGS 3D Elevation Program](https://www.usgs.gov/3d-elevation-program)
 
 Provider policies may change. Configuration and adapters must let deployments
 switch services without rebuilding the user workflow.
