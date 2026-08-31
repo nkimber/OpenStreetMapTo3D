@@ -12,7 +12,15 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        launchOptions: {
+          // GitHub's Linux runners have no physical GPU. Chromium requires an
+          // explicit opt-in before Three.js can use its SwiftShader WebGL
+          // fallback, which keeps the real render/physics loop under test.
+          args: ["--enable-unsafe-swiftshader"],
+        },
+      },
     },
   ],
 });
