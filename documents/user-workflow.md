@@ -1,8 +1,8 @@
 # User workflow
 
-Status: Draft
+Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 ## Primary journey
 
@@ -104,39 +104,40 @@ The world initially opens in Inspect mode with an orbit camera. Selecting an
 object shows its OSM identity, relevant source tags, generated values, and any
 manual override.
 
-Initial editing actions:
+Implemented editing actions:
 
 - Change building height
 - Hide or restore a feature
 - Adjust a road width
-- Mark a road as driveable or decorative
-- Set or move the vehicle spawn point
+- Set or move the exact vehicle spawn point by clicking a road
 - Undo and redo changes
 
 Edits are stored as overrides; the original OSM source snapshot remains intact.
 
 ## 8. Place the vehicle
 
-The user clicks a road. The application snaps the spawn point to the road graph,
-aligns the car with the road tangent, validates ground clearance, and previews
-the result before entering Drive mode.
+The user clicks a road surface. The application projects that exact picked point
+onto the road centerline and aligns the car with the closest segment tangent.
+The resulting versioned spawn override persists with the project.
 
 If the selected point is unsuitable, the application explains why and proposes
 the nearest valid point.
 
 ## 9. Drive
 
-Initial controls:
+Current controls:
 
-- WASD or arrow keys: throttle, brake, and steering
+- W/S or up/down: forward and reverse
+- A/D or left/right: steering
 - Space: handbrake
-- R: reset at the most recent valid road position
-- C: cycle chase, hood, and free cameras
-- Escape: pause and return to Inspect mode
+- R: reset at the most recent safe position
+- Shift+R: return to the configured spawn
+- Standard gamepad: left stick steering, triggers throttle/reverse, primary
+  button handbrake
 
-Drive mode displays an optional minimap, speed, reset control, camera mode, and
-OpenStreetMap attribution. It should not expose editing controls while physics
-is active.
+Drive mode displays speed, safe-reset and spawn-return controls, gamepad and
+steering settings, a chase camera, and OpenStreetMap attribution. Editing
+controls are hidden while physics is active.
 
 ## 10. Save and reopen
 

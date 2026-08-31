@@ -1,8 +1,8 @@
 # Testing strategy
 
-Status: Draft
+Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 ## Objectives
 
@@ -39,19 +39,19 @@ High-value units include:
 Each fixture contains source data, expected diagnostics, and invariant checks
 rather than fragile full-buffer snapshots.
 
-Required fixtures:
+Implemented representative fixtures:
 
-- Simple four-way intersection
+- Simple four-way intersection and dense building block
 - Curved residential road
-- Cul-de-sac and driveway
+- T-junction and cul-de-sac
+- Ground road, bridge, and tunnel sharing coordinates on separate layers
+
+Additional normalization fixtures cover:
+
 - Building polygon with a courtyard
 - OSM multipolygon relation
 - Missing building heights
 - Invalid self-intersecting polygon
-- Bridge over road or water
-- Tunnel and layer relationship
-- Boundary-crossing feature
-- Dense suburban neighborhood
 
 Generated mesh snapshots may be used for focused regression tests but should be
 versioned deliberately when algorithms change.
@@ -67,30 +67,34 @@ versioned deliberately when algorithms change.
 
 ### Browser and end-to-end tests
 
-Playwright covers:
+The offline Playwright workflow covers:
 
 1. Open the sample neighborhood.
 2. Select or accept the default boundary.
 3. Generate the world.
-4. Inspect a road and building.
-5. Place the vehicle.
-6. Enter Drive mode and apply input.
-7. Reset the vehicle.
-8. Save, reload, and compare project state.
-9. Confirm attribution remains available.
+4. Inspect a building and verify generated-value provenance.
+5. Apply a height override and verify exactly one chunk rebuilds.
+6. Verify build-hash changes, undo, redo, hide, and restore.
+7. Enter Drive mode, apply input, and verify the configured speed budget.
+8. Use safe reset and original-spawn return.
+9. Reopen the saved world and verify the override remains authoritative.
+10. Confirm attribution remains available.
 
 The sample workflow must run without network access.
 
 ### Physics replay tests
 
-Record a fixed sequence of inputs and assert bounded outcomes at checkpoints:
+The Rapier replay runs a fixed 60 Hz input sequence and asserts bounded outcomes:
 
-- Vehicle remains upright on a straight road.
-- Braking reduces velocity within an expected range.
-- Steering changes heading in the expected direction.
-- Reset produces the saved stable transform.
-- Repeating the same input produces equivalent results for the same Rapier and
-  project versions.
+- The vehicle remains upright on continuous ground while crossing the origin
+  chunk seam.
+- The 90 km/h force taper stays under the allowed tolerance.
+- Braking reduces velocity by the documented amount.
+- Repeating the sequence produces equivalent position and speed checkpoints for
+  the same Rapier and project versions.
+
+Pure simulation tests separately cover safe-pose classification, recovery
+timeouts, input smoothing, speed-force tapering, and standard-gamepad mapping.
 
 Exact cross-version floating-point equality is not required; tolerances must be
 documented.
@@ -115,6 +119,9 @@ Track:
 
 Performance failures should report which chunks or feature classes dominate the
 budget.
+
+Current budgets and the reference-machine baseline are recorded in
+[performance-budget.md](performance-budget.md).
 
 ## Continuous integration gates
 

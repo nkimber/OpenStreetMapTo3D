@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-test("imports, generates, drives, resets, and reopens the sample world", async ({
+test("imports, incrementally edits, drives, and reopens the sample world", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await page.goto("/");
   await expect(page.getByText("Docker services ready")).toBeVisible();
 
@@ -18,6 +19,48 @@ test("imports, generates, drives, resets, and reopens the sample world", async (
   await page.getByRole("button", { name: /Generate and explore/ }).click();
   await expect(page.getByRole("heading", { name: worldName })).toBeVisible();
   await expect(page.getByText("© OpenStreetMap contributors")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Drive" })).toBeEnabled();
+  await expect(page.getByLabel("World statistics")).toContainText("chunks");
+
+  await page.getByText("Build & performance").click();
+  const buildHash = page.getByTitle("Deterministic build hash");
+  const originalHash = await buildHash.textContent();
+  expect(originalHash).toMatch(/^[a-f0-9]{16}$/);
+
+  await page.getByLabel("Select a feature").selectOption("osm:way:10006");
+  await expect(page.getByLabel("Height (metres)")).toHaveValue("3");
+  await expect(page.locator(".provenance strong")).toHaveText("levels");
+  await page.getByLabel("Height (metres)").fill("14");
+  await page.getByRole("button", { name: "Apply" }).click();
+  await expect(page.locator(".provenance strong")).toHaveText("override");
+  await expect(
+    page.locator('.telemetry-panel dt:text-is("Last rebuild") + dd'),
+  ).toHaveText("1 chunks");
+  await expect(buildHash).not.toHaveText(originalHash ?? "");
+
+  await page.getByRole("button", { name: /Undo/ }).click();
+  await expect(page.getByLabel("Height (metres)")).toHaveValue("3");
+  await expect(page.locator(".provenance strong")).toHaveText("levels");
+  await expect(buildHash).toHaveText(originalHash ?? "");
+
+  await page.getByRole("button", { name: /Redo/ }).click();
+  await expect(page.getByLabel("Height (metres)")).toHaveValue("14");
+  await expect(page.locator(".provenance strong")).toHaveText("override");
+
+  await page.getByRole("button", { name: "Hide feature" }).click();
+  await expect(
+    page.getByText(
+      "Select a road or building in the scene to inspect its source data.",
+    ),
+  ).toBeVisible();
+  await page.getByLabel("Select a feature").selectOption("osm:way:10006");
+  await expect(
+    page.getByRole("button", { name: "Show feature" }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Show feature" }).click();
+  await expect(
+    page.getByRole("button", { name: "Hide feature" }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Drive" }).click();
   await expect(page.getByRole("button", { name: "Reset car" })).toBeVisible();
@@ -27,11 +70,26 @@ test("imports, generates, drives, resets, and reopens the sample world", async (
       Number(await page.locator(".world-stats .speed strong").textContent()),
     )
     .toBeGreaterThan(0);
+  await page.waitForTimeout(3_500);
+  expect(
+    Number(await page.locator(".world-stats .speed strong").textContent()),
+  ).toBeLessThan(105);
   await page.keyboard.up("w");
   await page.getByRole("button", { name: "Reset car" }).click();
+  await expect
+    .poll(async () =>
+      Number(await page.locator(".world-stats .speed strong").textContent()),
+    )
+    .toBeLessThan(1);
+  await page.getByRole("button", { name: "Return to spawn" }).click();
 
   await page.getByRole("button", { name: "Return to world setup" }).click();
-  await expect(
-    page.getByRole("button", { name: new RegExp(worldName) }),
-  ).toBeVisible();
+  const savedWorld = page.getByRole("button", { name: new RegExp(worldName) });
+  await expect(savedWorld).toBeVisible();
+  await savedWorld.click();
+  await expect(page.getByRole("heading", { name: worldName })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Drive" })).toBeEnabled();
+  await page.getByLabel("Select a feature").selectOption("osm:way:10006");
+  await expect(page.getByLabel("Height (metres)")).toHaveValue("14");
+  await expect(page.locator(".provenance strong")).toHaveText("override");
 });

@@ -1,16 +1,17 @@
 # Technical architecture
 
-Status: Draft
+Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 ## Architecture summary
 
 OpenStreetMapTo3D is a TypeScript modular monolith delivered through Docker
-Compose. The browser performs real-time rendering, world-mesh preparation, and
-vehicle physics. The server owns external data access, normalization, caching,
-project persistence, and long-running import state. PostgreSQL with PostGIS owns
-geospatial records and validation.
+Compose. The browser performs real-time rendering and vehicle physics while a
+module Web Worker performs deterministic geometry planning and chunk
+assignment. The server owns external data access, normalization, caching,
+project persistence, and long-running import state. PostgreSQL with PostGIS
+owns geospatial records and validation.
 
 ```mermaid
 flowchart LR
@@ -19,11 +20,11 @@ flowchart LR
         Map[MapLibre preview]
         Engine[Three.js engine]
         Physics[Rapier physics]
-        Generator[World generator]
+        Worker[World-generation worker]
         UI --> Map
         UI --> Engine
         Engine <--> Physics
-    Engine <--> Generator
+        Engine <--> Worker
     end
 
     subgraph Docker Compose
@@ -52,7 +53,9 @@ containers provide the application, API, database, and cached data.
 - Project editor and diagnostics
 - Three.js scene lifecycle
 - Fixed-timestep Rapier simulation
-- Bounded deterministic mesh planning
+- Versioned Worker requests, progress, cancellation, and diagnostics
+- Deterministic mesh planning and 256 m authoritative-owner chunks
+- Affected-chunk-only scene and collider replacement after edits
 - Input, cameras, and Drive mode
 - Client-side validation and progress presentation
 
@@ -110,7 +113,7 @@ User submits search
   -> API OSM adapter creates source snapshot
   -> normalization and PostGIS validation
   -> normalized WorldDefinition returned
-  -> browser worker creates chunk buffers
+    -> browser Worker creates a serializable deterministic WorldPlan
   -> Three.js creates visible meshes
   -> Rapier creates simplified colliders
 ```
@@ -127,14 +130,18 @@ User submits search
 8. Per-frame engine state does not flow through React component state.
 9. Physics colliders are allowed to be simpler than visible geometry.
 10. Every displayed or exported world retains source attribution.
+11. A feature has one deterministic owner chunk; junction dependencies map the
+    source feature to every chunk that must be rebuilt after an edit.
+12. Worker messages and override payloads are explicitly versioned.
 
 ## Deliberate simplifications
 
 - One API process rather than microservices
 - No Redis; job state starts in PostgreSQL
 - No WebSockets; progress uses server-sent events
-- Rendering and bounded MVP geometry preparation remain on the main thread
-- A Web Worker is an evolution point for larger areas
+- GPU buffer upload and Rapier object creation remain on the main thread
+- Worker output uses structured-cloneable arrays rather than a persistent mesh
+  cache or streaming binary format
 - Flat terrain precedes elevation and imagery
 - Generated meshes are caches, not primary records
 

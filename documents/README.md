@@ -2,7 +2,7 @@
 
 Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 This directory contains the product intent, implemented architecture, and
 future roadmap for OpenStreetMapTo3D. Start with the
@@ -34,6 +34,8 @@ MVP from later roadmap items.
   production container workflows.
 - [Testing strategy](testing-strategy.md) defines automated validation,
   deterministic fixtures, browser tests, and performance gates.
+- [Performance budget](performance-budget.md) records the reference machine,
+  measurable generation and driving budgets, and the current sample baseline.
 - [Security, privacy, and licensing](security-privacy-and-licensing.md) records
   the operating constraints for location data, external services, secrets,
   OpenStreetMap attribution, and open-source dependencies.
@@ -44,6 +46,7 @@ MVP from later roadmap items.
 - [ADR-0001: TypeScript modular monolith](decisions/0001-typescript-modular-monolith.md)
 - [ADR-0002: Local ENU world coordinates](decisions/0002-local-enu-coordinates.md)
 - [ADR-0003: Immutable source snapshots and overrides](decisions/0003-source-snapshots-and-overrides.md)
+- [ADR-0004: Worker-built deterministic chunks](decisions/0004-worker-built-deterministic-chunks.md)
 
 ## Documentation conventions
 

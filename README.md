@@ -35,10 +35,15 @@ intentionally want to remove local projects and cached source data.
 - Rate-limited Nominatim and bounded Overpass adapters
 - Immutable, content-addressed OSM snapshots in PostgreSQL/PostGIS
 - Deterministic local-ENU roads, land, and extruded buildings
-- Three.js inspect mode and Rapier ray-cast vehicle driving
-- Persistent height, width, visibility, and road-spawn overrides
+- Cancelable Web Worker generation into deterministic 256 m chunks
+- Joined road strips, layer-aware intersections/end caps, and provenance
+- Three.js inspect mode and fixed-step Rapier ray-cast vehicle driving
+- Keyboard and standard-gamepad controls with safe-pose recovery
+- Persistent height, width, visibility, and exact road-spawn overrides
+- Undo/redo and affected-chunk-only rebuilds in the live editor
+- Build hash, worker timing, frame, triangle, recovery, and diagnostic telemetry
 - Saved/recent worlds and visible OpenStreetMap attribution
-- Fully offline sample data for automated tests
+- Fully offline sample data and representative geometry/physics fixtures
 
 ## Verify it
 

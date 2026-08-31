@@ -9,7 +9,7 @@ import type {
 } from "@osm3d/contracts";
 import type { DatabasePool } from "./database.js";
 
-const GENERATOR_VERSION = "0.1.0";
+const GENERATOR_VERSION = "0.2.0";
 
 interface WorldRow {
   id: string;

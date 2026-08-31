@@ -1,19 +1,20 @@
 # Delivery roadmap
 
-Status: Draft
+Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 The roadmap is organized around demonstrable vertical slices. A phase is
 complete only when its exit criteria pass in Docker and its supporting tests and
 documentation are present.
 
-Current status: Phases 0 through 3 have a working MVP vertical slice. Phase 4
-has project persistence and core overrides, while undo/redo and partial rebuilds
-remain. Phases 5 and 6 remain future work. See
+Current status: Phases 0 through 4 are implemented and verified as a complete
+editable, driveable vertical slice. Phases 5 and 6 remain future work. See
 [implementation status](implementation-status.md) for verified details.
 
 ## Phase 0: Repository and container foundation
+
+Status: Complete
 
 Deliverables:
 
@@ -34,6 +35,8 @@ Exit criteria:
 
 ## Phase 1: Location and OSM preview
 
+Status: Complete
+
 Deliverables:
 
 - Explicit geocoding search and coordinate entry
@@ -52,11 +55,13 @@ Exit criteria:
 
 ## Phase 2: Deterministic 3D world
 
+Status: Complete
+
 Deliverables:
 
 - Local ENU coordinate conversion
 - Browser world-generation worker
-- Chunked flat ground
+- Deterministic 256 m chunk plan with continuous flat ground
 - Road surfaces and intersection handling
 - Extruded buildings with height provenance
 - Inspect camera and object selection
@@ -68,6 +73,8 @@ Exit criteria:
 - Invalid individual features yield diagnostics rather than crashing the build.
 
 ## Phase 3: Drive mode
+
+Status: Complete
 
 Deliverables:
 
@@ -86,6 +93,8 @@ Exit criteria:
 
 ## Phase 4: Editing and persistence
 
+Status: Complete
+
 Deliverables:
 
 - Saved projects and recent-world list
@@ -102,6 +111,8 @@ Exit criteria:
 
 ## Phase 5: Terrain and visual quality
 
+Status: Planned
+
 Deliverables:
 
 - Elevation-provider interface
@@ -117,6 +128,8 @@ Exit criteria:
 - Elevation source and license appear in project and export attribution.
 
 ## Phase 6: Distribution and contribution readiness
+
+Status: Planned
 
 Deliverables:
 

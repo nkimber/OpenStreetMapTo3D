@@ -1,8 +1,8 @@
 # World generation and physics
 
-Status: Draft
+Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 ## Coordinate model
 
@@ -37,8 +37,7 @@ rebuild the same world even when generated mesh caches are removed.
 
 ## Chunking
 
-The local world is divided into square chunks. The proposed starting size is
-256 metres, subject to profiling.
+The local world is divided into deterministic 256 metre square chunks.
 
 Each chunk may contain:
 
@@ -50,8 +49,10 @@ Each chunk may contain:
 - Feature-ID lookup tables for selection
 
 Chunks allow frustum culling, bounded rebuilds after edits, and future streaming.
-A feature crossing a boundary must have one authoritative owner or deterministic
-fragments so that it is not rendered twice.
+A feature crossing a boundary has one authoritative owner selected from its
+centroid so that it is not rendered twice. Intersection dependencies can add a
+source ID to other chunks; edit invalidation uses the union of the old and new
+feature-to-chunk maps.
 
 ## Roads
 
@@ -63,14 +64,14 @@ Width precedence:
 2. Lane count multiplied by the configured lane width
 3. Highway-class default
 
-Generation stages:
+Implemented generation stages:
 
-1. Split centerlines at graph intersections.
-2. Resolve bridges, tunnels, and vertical layer relationships.
-3. Create buffered surface polygons with stable joins and end caps.
-4. Generate intersection polygons.
-5. Triangulate visible surfaces.
-6. Retain the centerline graph for spawn snapping and the minimap.
+1. Deduplicate centerline points and classify layer, bridge, and tunnel state.
+2. Create continuous two-sided strips with stable miter joins.
+3. Group equal graph nodes per vertical layer.
+4. Generate deterministic intersection and round end-cap discs.
+5. Triangulate visible surfaces and retain centerlines for exact spawn snapping.
+6. Assign roads and junction dependencies to chunks in stable order.
 
 The visible road and the physics surface are separate concerns. The MVP may use
 a continuous flat ground collider with roads rendered slightly above it. Later,
@@ -127,13 +128,12 @@ Worker input:
 - User overrides
 - Generator version and deterministic seed
 
-Worker output:
-
-- Transferable vertex, normal, UV, and index buffers
-- Material groups
-- Feature-selection ranges
-- Simplified collider descriptions
-- Diagnostics and statistics
+Worker output is a structured-cloneable `WorldPlan` containing road surface
+positions and indices, junctions, building/land plans, authoritative chunks,
+feature-to-chunk dependencies, the deterministic build hash, diagnostics, and
+statistics. The main thread converts that plan into Three.js buffers and Rapier
+objects. A future binary/transferable representation can reduce structured-copy
+cost for larger areas without changing the versioned message contract.
 
 The main thread owns Three.js objects, input handling, and the render loop.
 
@@ -150,18 +150,24 @@ The initial vehicle uses Rapier's dynamic ray-cast vehicle controller:
 - Tunable engine, brake, steering, suspension, and friction parameters
 - Continuous collision detection where profiling shows it is necessary
 
-Reset behavior records recent stable vehicle transforms on valid road or ground.
-Pressing reset restores the latest safe transform, clears unsafe velocity, and
-keeps the current camera mode.
+Reset behavior records recent upright, in-bounds transforms on valid ground.
+Pressing `R` or **Reset car** restores the latest safe transform; `Shift+R` or
+**Return to spawn** restores the configured road spawn. Both clear velocity.
+Sustained unsafe poses are recovered automatically after 2.5 seconds, and a
+fall below -8 m recovers immediately.
 
-## Proposed performance targets
+Forward engine force tapers toward 90 km/h and reverse force toward 32 km/h.
+The UI supports keyboard controls, the browser standard-gamepad layout, and a
+0.5–1.5 steering-sensitivity range.
 
-- Default world: 1 km by 1 km
-- Recommended maximum: 2 km by 2 km
-- Drive-mode target: 60 frames per second on documented reference hardware
-- No routine interactive main-thread task longer than 50 milliseconds
-- Geometry generation must be cancelable
-- Rebuilding one edited chunk must not rebuild the entire world
+## Performance targets and telemetry
 
-Reference hardware and concrete geometry budgets will be recorded after the
-first performance fixture exists.
+The default world is 1 km by 1 km and the recommended maximum is 2 km by 2 km.
+Drive mode targets 60 frames per second, routine main-thread work stays below
+50 ms, generation is cancelable, and a single-feature edit rebuilds only its
+affected chunks. The running editor exposes frame rate, road triangles, Worker
+duration, long frames, recovery count, last rebuilt chunks, diagnostics, and
+build hash.
+
+See the measured baseline and explicit gates in
+[performance-budget.md](performance-budget.md).

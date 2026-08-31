@@ -196,6 +196,25 @@ export const WorldDefinitionSchema = z.object({
 
 export type WorldDefinition = z.infer<typeof WorldDefinitionSchema>;
 
+export const WorldBuildRequestSchema = z.object({
+  version: z.literal(1),
+  jobId: z.uuid(),
+  definition: WorldDefinitionSchema,
+  chunkSize: z.number().int().min(64).max(1_024).default(256),
+});
+
+export type WorldBuildRequest = z.infer<typeof WorldBuildRequestSchema>;
+
+export const WorldBuildProgressSchema = z.object({
+  version: z.literal(1),
+  jobId: z.uuid(),
+  type: z.literal("progress"),
+  stage: z.enum(["queued", "normalizing", "roads", "chunking", "complete"]),
+  progress: z.number().int().min(0).max(100),
+});
+
+export type WorldBuildProgress = z.infer<typeof WorldBuildProgressSchema>;
+
 export const ApiErrorSchema = z.object({
   error: z.object({
     code: z.string(),

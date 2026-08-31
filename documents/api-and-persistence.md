@@ -1,14 +1,15 @@
 # API and persistence
 
-Status: Draft
+Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-08-31
 
 ## API principles
 
 - HTTP JSON endpoints with versioned Zod contracts
-- OpenAPI generated from the same validation schemas
-- Server-sent events for import and build progress
+- Zod schemas shared by the API and browser; OpenAPI generation is future work
+- Server-sent events for import progress and versioned Worker messages for
+  browser world-build progress
 - Stable machine-readable error codes
 - Idempotency for operations that create source snapshots or projects
 - No arbitrary provider URLs supplied by clients
@@ -155,13 +156,9 @@ The browser receives a versioned `WorldDefinition`, not database rows:
 ```ts
 interface WorldDefinition {
   schemaVersion: number;
-  worldId: string;
-  sourceSnapshotId: string;
-  bounds: Wgs84Bounds;
-  anchor: Wgs84Position;
+  world: WorldSummary;
   attribution: Attribution[];
   features: NormalizedFeature[];
-  settings: GenerationSettings;
   overrides: WorldOverride[];
   diagnostics: Diagnostic[];
 }

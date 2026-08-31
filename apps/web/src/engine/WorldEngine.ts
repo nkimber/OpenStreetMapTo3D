@@ -1,20 +1,35 @@
 import RAPIER from "@dimforge/rapier3d-compat";
-import type { WorldDefinition } from "@osm3d/contracts";
+import type {
+  Diagnostic,
+  WorldBuildProgress,
+  WorldDefinition,
+} from "@osm3d/contracts";
 import { wgs84ToLocal } from "@osm3d/geo";
 import {
   defaultVehicleConfig,
+  isVehiclePoseSafe,
   neutralVehicleInput,
+  shouldRecoverVehicle,
   smoothVehicleInput,
+  speedLimitedEngineForce,
+  standardGamepadInput,
   type VehicleInput,
 } from "@osm3d/simulation";
 import {
-  buildWorldPlan,
+  affectedChunkIds,
+  changedOverrideTargetIds,
+  closestPointOnRoad,
+  deterministicHash,
+  resolveSpawnPose,
   type BuildingPlan,
   type LocalPoint2,
-  type RoadPlan,
+  type SurfaceMeshPlan,
+  type WorldChunkPlan,
+  type WorldPlan,
 } from "@osm3d/worldgen";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { WorldBuilderClient } from "./worldBuilder.js";
 
 const FIXED_STEP = 1 / 60;
 
@@ -23,11 +38,39 @@ export interface EngineStats {
   buildings: number;
   features: number;
   speedKph: number;
+  fps: number;
+  chunks: number;
+  triangles: number;
+  buildHash: string;
+  buildDurationMs: number;
+  diagnosticCount: number;
+  longFrameCount: number;
+  recoveryCount: number;
+  lastRebuiltChunks: number;
+  inputSource: "keyboard" | "gamepad";
+}
+
+export interface EngineSelection {
+  sourceId?: string;
+  point?: LocalPoint2;
 }
 
 export interface EngineCallbacks {
-  onSelect: (sourceId: string | undefined) => void;
+  onSelect: (selection: EngineSelection) => void;
   onStats: (stats: EngineStats) => void;
+  onBuildProgress: (progress: WorldBuildProgress) => void;
+  onDiagnostics: (diagnostics: Diagnostic[]) => void;
+}
+
+export interface DriveInputPreferences {
+  gamepadEnabled: boolean;
+  steeringSensitivity: number;
+}
+
+export interface DefinitionUpdateResult {
+  buildHash: string;
+  rebuiltChunkIds: string[];
+  durationMs: number;
 }
 
 export type EngineMode = "inspect" | "drive";
@@ -80,52 +123,40 @@ function shapeFromRings(rings: LocalPoint2[][]): THREE.Shape | undefined {
   return shape;
 }
 
-function roadGeometry(road: RoadPlan): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const indices: number[] = [];
-  const halfWidth = road.width / 2;
-  for (let index = 0; index < road.points.length - 1; index += 1) {
-    const start = road.points[index];
-    const end = road.points[index + 1];
-    if (!start || !end) continue;
-    const dx = end.x - start.x;
-    const dz = end.z - start.z;
-    const length = Math.hypot(dx, dz);
-    if (length < 0.05) continue;
-    const offsetX = (-dz / length) * halfWidth;
-    const offsetZ = (dx / length) * halfWidth;
-    const vertexOffset = positions.length / 3;
-    positions.push(
-      start.x + offsetX,
-      0.035,
-      start.z + offsetZ,
-      start.x - offsetX,
-      0.035,
-      start.z - offsetZ,
-      end.x + offsetX,
-      0.035,
-      end.z + offsetZ,
-      end.x - offsetX,
-      0.035,
-      end.z - offsetZ,
-    );
-    indices.push(
-      vertexOffset,
-      vertexOffset + 2,
-      vertexOffset + 1,
-      vertexOffset + 2,
-      vertexOffset + 3,
-      vertexOffset + 1,
-    );
-  }
+function geometryFromSurface(surface: SurfaceMeshPlan): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute(
     "position",
-    new THREE.Float32BufferAttribute(positions, 3),
+    new THREE.Float32BufferAttribute(surface.positions, 3),
   );
-  geometry.setIndex(indices);
+  geometry.setIndex(surface.indices);
   geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
   return geometry;
+}
+
+function disposeObject(root: THREE.Object3D): void {
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    object.geometry.dispose();
+    const materials = Array.isArray(object.material)
+      ? object.material
+      : [object.material];
+    for (const material of materials) material.dispose();
+  });
+}
+
+function planTriangles(plan: WorldPlan): number {
+  const roadTriangles = plan.roads.reduce(
+    (sum, road) => sum + road.mesh.indices.length / 3,
+    0,
+  );
+  const junctionTriangles = plan.junctions.reduce(
+    (sum, junction) => sum + junction.mesh.indices.length / 3,
+    0,
+  );
+  return Math.round(roadTriangles + junctionTriangles);
 }
 
 export class WorldEngine {
@@ -133,9 +164,26 @@ export class WorldEngine {
     container: HTMLElement,
     definition: WorldDefinition,
     callbacks: EngineCallbacks,
+    signal?: AbortSignal,
   ): Promise<WorldEngine> {
-    await RAPIER.init();
-    return new WorldEngine(container, definition, callbacks);
+    const builder = new WorldBuilderClient();
+    try {
+      const [, result] = await Promise.all([
+        RAPIER.init(),
+        builder.build(definition, callbacks.onBuildProgress, signal),
+      ]);
+      return new WorldEngine(
+        container,
+        definition,
+        callbacks,
+        builder,
+        result.plan,
+        result.durationMs,
+      );
+    } catch (error) {
+      builder.dispose();
+      throw error;
+    }
   }
 
   private readonly scene = new THREE.Scene();
@@ -150,31 +198,51 @@ export class WorldEngine {
   private readonly pointer = new THREE.Vector2();
   private readonly selectable: THREE.Object3D[] = [];
   private readonly keys = new Set<string>();
-  private readonly plan;
+  private readonly chunkGroups = new Map<string, THREE.Group>();
+  private readonly chunkBodies = new Map<string, RAPIER.RigidBody[]>();
   private readonly chassis: RAPIER.RigidBody;
   private readonly vehicle: RAPIER.DynamicRayCastVehicleController;
   private readonly vehicleVisual: VehicleVisual;
   private readonly spawnPosition = new THREE.Vector3();
   private readonly spawnRotation = new THREE.Quaternion();
+  private readonly safePosition = new THREE.Vector3();
+  private readonly safeRotation = new THREE.Quaternion();
+  private definition: WorldDefinition;
+  private plan: WorldPlan;
   private animationFrame = 0;
   private previousTime = performance.now();
   private accumulator = 0;
   private currentInput: VehicleInput = { ...neutralVehicleInput };
+  private inputPreferences: DriveInputPreferences = {
+    gamepadEnabled: true,
+    steeringSensitivity: 1,
+  };
+  private inputSource: EngineStats["inputSource"] = "keyboard";
   private mode: EngineMode = "inspect";
   private disposed = false;
   private statsElapsed = 0;
+  private fpsElapsed = 0;
+  private fpsFrames = 0;
+  private fps = 0;
+  private longFrameCount = 0;
+  private recoveryCount = 0;
+  private unsafeElapsed = 0;
+  private safeElapsed = 0;
+  private buildDurationMs: number;
+  private lastRebuiltChunks: number;
 
   private constructor(
     private readonly container: HTMLElement,
-    private readonly definition: WorldDefinition,
+    definition: WorldDefinition,
     private readonly callbacks: EngineCallbacks,
+    private readonly builder: WorldBuilderClient,
+    plan: WorldPlan,
+    buildDurationMs: number,
   ) {
-    this.plan = buildWorldPlan(
-      definition.features,
-      definition.world.anchor,
-      definition.world.settings,
-      definition.overrides,
-    );
+    this.definition = definition;
+    this.plan = plan;
+    this.buildDurationMs = buildDurationMs;
+    this.lastRebuiltChunks = plan.chunks.length;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -182,14 +250,17 @@ export class WorldEngine {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure =
       definition.world.settings.visualStyle === "night" ? 0.8 : 1.05;
+    this.renderer.domElement.tabIndex = 0;
     this.container.appendChild(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.maxPolarAngle = Math.PI / 2.03;
 
     this.configureScene();
-    this.buildVisibleWorld();
-    this.buildPhysicsWorld();
+    this.buildGround();
+    for (const chunk of this.plan.chunks) this.buildChunk(chunk);
+    this.buildPhysicsGround();
+    for (const chunk of this.plan.chunks) this.buildChunkPhysics(chunk);
     const vehicle = this.createVehicle();
     this.chassis = vehicle.chassis;
     this.vehicle = vehicle.controller;
@@ -202,6 +273,8 @@ export class WorldEngine {
     window.addEventListener("keyup", this.keyUp);
     this.renderer.domElement.addEventListener("pointerdown", this.pointerDown);
     this.resize();
+    this.callbacks.onDiagnostics(this.plan.diagnostics);
+    this.emitStats();
     this.animationFrame = requestAnimationFrame(this.animate);
   }
 
@@ -213,15 +286,98 @@ export class WorldEngine {
     else if (previousMode === "drive") this.frameOverview();
   }
 
-  resetVehicle(): void {
-    this.chassis.setTranslation(this.spawnPosition, true);
-    this.chassis.setRotation(this.spawnRotation, true);
+  setInputPreferences(preferences: DriveInputPreferences): void {
+    this.inputPreferences = {
+      gamepadEnabled: preferences.gamepadEnabled,
+      steeringSensitivity: Math.max(
+        0.5,
+        Math.min(1.5, preferences.steeringSensitivity),
+      ),
+    };
+  }
+
+  async updateDefinition(
+    definition: WorldDefinition,
+    signal?: AbortSignal,
+  ): Promise<DefinitionUpdateResult> {
+    const previousDefinition = this.definition;
+    const previousPlan = this.plan;
+    const changedTargets = changedOverrideTargetIds(
+      previousDefinition.overrides,
+      definition.overrides,
+    );
+    const settingsChanged =
+      deterministicHash(previousDefinition.world.settings) !==
+      deterministicHash(definition.world.settings);
+    const spawnChanged = changedTargets.some(
+      (targetId) =>
+        previousDefinition.overrides.some(
+          (override) =>
+            override.targetId === targetId &&
+            override.operation === "set-spawn",
+        ) ||
+        definition.overrides.some(
+          (override) =>
+            override.targetId === targetId &&
+            override.operation === "set-spawn",
+        ),
+    );
+    const result = await this.builder.build(
+      definition,
+      this.callbacks.onBuildProgress,
+      signal,
+    );
+    const rebuiltChunkIds = settingsChanged
+      ? [
+          ...new Set([
+            ...previousPlan.chunks.map((chunk) => chunk.id),
+            ...result.plan.chunks.map((chunk) => chunk.id),
+          ]),
+        ].sort()
+      : affectedChunkIds(previousPlan, result.plan, changedTargets);
+
+    this.definition = definition;
+    this.plan = result.plan;
+    this.buildDurationMs = result.durationMs;
+    this.lastRebuiltChunks = rebuiltChunkIds.length;
+    for (const chunkId of rebuiltChunkIds) {
+      this.removeChunk(chunkId);
+      const chunk = this.plan.chunks.find((item) => item.id === chunkId);
+      if (chunk) {
+        this.buildChunk(chunk);
+        this.buildChunkPhysics(chunk);
+      }
+    }
+    if (spawnChanged) {
+      this.applyConfiguredSpawn(true);
+    }
+    this.callbacks.onDiagnostics(this.plan.diagnostics);
+    this.emitStats();
+    return {
+      buildHash: this.plan.buildHash,
+      rebuiltChunkIds,
+      durationMs: result.durationMs,
+    };
+  }
+
+  cancelBuild(): void {
+    this.builder.cancel();
+  }
+
+  resetVehicle(toOriginalSpawn = false): void {
+    const position = toOriginalSpawn ? this.spawnPosition : this.safePosition;
+    const rotation = toOriginalSpawn ? this.spawnRotation : this.safeRotation;
+    this.chassis.setTranslation(position, true);
+    this.chassis.setRotation(rotation, true);
     this.chassis.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.chassis.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.currentInput = { ...neutralVehicleInput };
+    this.unsafeElapsed = 0;
   }
 
   dispose(): void {
     this.disposed = true;
+    this.builder.dispose();
     cancelAnimationFrame(this.animationFrame);
     window.removeEventListener("resize", this.resize);
     window.removeEventListener("keydown", this.keyDown);
@@ -231,15 +387,7 @@ export class WorldEngine {
       this.pointerDown,
     );
     this.controls.dispose();
-    this.scene.traverse((object) => {
-      if (object instanceof THREE.Mesh) {
-        object.geometry.dispose();
-        const materials = Array.isArray(object.material)
-          ? object.material
-          : [object.material];
-        for (const material of materials) material.dispose();
-      }
-    });
+    disposeObject(this.scene);
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.physics.free();
@@ -311,25 +459,33 @@ export class WorldEngine {
     };
   }
 
-  private buildVisibleWorld(): void {
+  private buildGround(): void {
     const size = this.worldSize();
-    const groundMaterial = new THREE.MeshStandardMaterial({
-      color:
-        this.definition.world.settings.visualStyle === "night"
-          ? 0x18251c
-          : 0x88a66b,
-      roughness: 0.96,
-    });
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(size.width, size.depth),
-      groundMaterial,
+      new THREE.MeshStandardMaterial({
+        color:
+          this.definition.world.settings.visualStyle === "night"
+            ? 0x18251c
+            : 0x88a66b,
+        roughness: 0.96,
+      }),
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(size.centerX, 0, size.centerZ);
     ground.receiveShadow = true;
+    ground.userData.permanent = true;
     this.scene.add(ground);
+  }
 
-    for (const area of this.plan.land) {
+  private buildChunk(chunk: WorldChunkPlan): void {
+    const group = new THREE.Group();
+    group.name = `chunk:${chunk.id}`;
+    group.userData.chunkId = chunk.id;
+
+    for (const index of chunk.landIndexes) {
+      const area = this.plan.land[index];
+      if (!area) continue;
       const shape = shapeFromRings(area.rings);
       if (!shape) continue;
       const color =
@@ -351,52 +507,106 @@ export class WorldEngine {
       mesh.position.y = 0.012;
       mesh.receiveShadow = true;
       mesh.userData.sourceId = area.sourceId;
-      this.scene.add(mesh);
+      mesh.userData.featureKind = area.kind;
+      group.add(mesh);
       this.selectable.push(mesh);
     }
 
-    const roadMaterial = new THREE.MeshStandardMaterial({
-      color: 0x343b42,
-      roughness: 0.88,
-      metalness: 0.02,
-    });
-    for (const road of this.plan.roads) {
-      const mesh = new THREE.Mesh(roadGeometry(road), roadMaterial);
+    for (const index of chunk.roadIndexes) {
+      const road = this.plan.roads[index];
+      if (!road) continue;
+      const mesh = new THREE.Mesh(
+        geometryFromSurface(road.mesh),
+        new THREE.MeshStandardMaterial({
+          color: road.tunnel ? 0x252b30 : road.bridge ? 0x48515a : 0x343b42,
+          roughness: 0.88,
+          metalness: 0.02,
+        }),
+      );
       mesh.receiveShadow = true;
       mesh.userData.sourceId = road.sourceId;
-      this.scene.add(mesh);
+      mesh.userData.featureKind = "road";
+      group.add(mesh);
       this.selectable.push(mesh);
     }
 
-    for (const building of this.plan.buildings) this.addBuilding(building);
+    for (const index of chunk.junctionIndexes) {
+      const junction = this.plan.junctions[index];
+      if (!junction) continue;
+      const mesh = new THREE.Mesh(
+        geometryFromSurface(junction.mesh),
+        new THREE.MeshStandardMaterial({
+          color: 0x343b42,
+          roughness: 0.88,
+        }),
+      );
+      mesh.receiveShadow = true;
+      mesh.userData.sourceId = junction.sourceIds[0];
+      mesh.userData.featureKind = "road";
+      group.add(mesh);
+      this.selectable.push(mesh);
+    }
+
+    for (const index of chunk.buildingIndexes) {
+      const building = this.plan.buildings[index];
+      if (!building) continue;
+      const mesh = this.createBuildingMesh(building);
+      if (!mesh) continue;
+      group.add(mesh);
+      this.selectable.push(mesh);
+    }
+    this.chunkGroups.set(chunk.id, group);
+    this.scene.add(group);
   }
 
-  private addBuilding(building: BuildingPlan): void {
+  private createBuildingMesh(building: BuildingPlan): THREE.Mesh | undefined {
     const shape = shapeFromRings(building.rings);
-    if (!shape) return;
+    if (!shape) return undefined;
     const geometry = new THREE.ExtrudeGeometry(shape, {
       depth: building.height,
       bevelEnabled: false,
       curveSegments: 1,
     });
     geometry.rotateX(-Math.PI / 2);
-    const material = new THREE.MeshStandardMaterial({
-      color: colorFromId(
-        building.sourceId,
-        this.definition.world.settings.visualStyle,
-      ),
-      roughness: 0.82,
-    });
-    const mesh = new THREE.Mesh(geometry, material);
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: colorFromId(
+          building.sourceId,
+          this.definition.world.settings.visualStyle,
+        ),
+        roughness: 0.82,
+      }),
+    );
     mesh.position.y = 0.02;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData.sourceId = building.sourceId;
-    this.scene.add(mesh);
-    this.selectable.push(mesh);
+    mesh.userData.featureKind = "building";
+    mesh.userData.heightSource = building.heightSource;
+    return mesh;
   }
 
-  private buildPhysicsWorld(): void {
+  private removeChunk(chunkId: string): void {
+    const group = this.chunkGroups.get(chunkId);
+    if (group) {
+      const removed = new Set<THREE.Object3D>();
+      group.traverse((object) => removed.add(object));
+      for (let index = this.selectable.length - 1; index >= 0; index -= 1) {
+        const object = this.selectable[index];
+        if (object && removed.has(object)) this.selectable.splice(index, 1);
+      }
+      this.scene.remove(group);
+      disposeObject(group);
+      this.chunkGroups.delete(chunkId);
+    }
+    for (const body of this.chunkBodies.get(chunkId) ?? []) {
+      this.physics.removeRigidBody(body);
+    }
+    this.chunkBodies.delete(chunkId);
+  }
+
+  private buildPhysicsGround(): void {
     this.physics.timestep = FIXED_STEP;
     const size = this.worldSize();
     const groundBody = this.physics.createRigidBody(
@@ -414,11 +624,15 @@ export class WorldEngine {
       ).setFriction(1.1),
       groundBody,
     );
+  }
 
+  private buildChunkPhysics(chunk: WorldChunkPlan): void {
     if (!this.definition.world.settings.buildingCollisions) return;
-    for (const building of this.plan.buildings) {
-      const outer = building.rings[0];
-      if (!outer || outer.length === 0) continue;
+    const bodies: RAPIER.RigidBody[] = [];
+    for (const index of chunk.buildingIndexes) {
+      const building = this.plan.buildings[index];
+      const outer = building?.rings[0];
+      if (!building || !outer || outer.length === 0) continue;
       const xs = outer.map((point) => point.x);
       const zs = outer.map((point) => point.z);
       const minX = Math.min(...xs);
@@ -442,7 +656,18 @@ export class WorldEngine {
         ).setFriction(0.8),
         body,
       );
+      bodies.push(body);
     }
+    this.chunkBodies.set(chunk.id, bodies);
+  }
+
+  private applyConfiguredSpawn(reset: boolean): void {
+    const pose = resolveSpawnPose(this.plan, this.definition.overrides);
+    this.spawnPosition.set(pose.x, 1.4, pose.z);
+    this.spawnRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), pose.yaw);
+    this.safePosition.copy(this.spawnPosition);
+    this.safeRotation.copy(this.spawnRotation);
+    if (reset) this.resetVehicle(true);
   }
 
   private createVehicle(): {
@@ -450,23 +675,11 @@ export class WorldEngine {
     controller: RAPIER.DynamicRayCastVehicleController;
     visual: VehicleVisual;
   } {
-    const spawnOverride = [...this.definition.overrides]
-      .reverse()
-      .find((override) => override.operation === "set-spawn");
-    const firstRoad =
-      this.plan.roads.find(
-        (road) =>
-          road.sourceId === spawnOverride?.targetId && road.points.length > 1,
-      ) ?? this.plan.roads.find((road) => road.points.length > 1);
-    const start = firstRoad?.points[0] ?? { x: 0, z: 0 };
-    const next = firstRoad?.points[1] ?? { x: 0, z: -1 };
-    const direction = new THREE.Vector2(
-      next.x - start.x,
-      next.z - start.z,
-    ).normalize();
-    const yaw = Math.atan2(-direction.x, -direction.y);
-    this.spawnPosition.set(start.x, 1.4, start.z);
-    this.spawnRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+    const pose = resolveSpawnPose(this.plan, this.definition.overrides);
+    this.spawnPosition.set(pose.x, 1.4, pose.z);
+    this.spawnRotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), pose.yaw);
+    this.safePosition.copy(this.spawnPosition);
+    this.safeRotation.copy(this.spawnRotation);
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(
         this.spawnPosition.x,
@@ -579,7 +792,7 @@ export class WorldEngine {
       )
     )
       event.preventDefault();
-    if (event.code === "KeyR") this.resetVehicle();
+    if (event.code === "KeyR") this.resetVehicle(event.shiftKey);
   };
 
   private readonly keyUp = (event: KeyboardEvent): void => {
@@ -592,16 +805,60 @@ export class WorldEngine {
     this.pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
     this.pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const match = this.raycaster.intersectObjects(this.selectable, false)[0]
-      ?.object;
-    this.callbacks.onSelect(
+    const intersection = this.raycaster.intersectObjects(
+      this.selectable,
+      false,
+    )[0];
+    const match = intersection?.object;
+    const sourceId =
       typeof match?.userData.sourceId === "string"
         ? match.userData.sourceId
-        : undefined,
-    );
+        : undefined;
+    if (!sourceId) {
+      this.callbacks.onSelect({});
+      return;
+    }
+    if (match?.userData.featureKind === "road" && intersection) {
+      const road = this.plan.roads.find((item) => item.sourceId === sourceId);
+      if (road) {
+        const pose = closestPointOnRoad(road, {
+          x: intersection.point.x,
+          z: intersection.point.z,
+        });
+        this.callbacks.onSelect({
+          sourceId,
+          point: { x: pose.x, z: pose.z },
+        });
+        return;
+      }
+    }
+    this.callbacks.onSelect({ sourceId });
   };
 
+  private gamepadInput(): VehicleInput | undefined {
+    if (!this.inputPreferences.gamepadEnabled || !navigator.getGamepads) return;
+    const gamepad = [...navigator.getGamepads()].find(
+      (candidate) => candidate?.connected && candidate.mapping === "standard",
+    );
+    if (!gamepad) return;
+    return standardGamepadInput(
+      {
+        throttle: gamepad.buttons[7]?.value ?? 0,
+        reverse: gamepad.buttons[6]?.value ?? 0,
+        steeringAxis: gamepad.axes[0] ?? 0,
+        handbrake: gamepad.buttons[0]?.pressed ?? false,
+      },
+      this.inputPreferences.steeringSensitivity,
+    );
+  }
+
   private targetInput(): VehicleInput {
+    const gamepad = this.gamepadInput();
+    if (gamepad) {
+      this.inputSource = "gamepad";
+      return gamepad;
+    }
+    this.inputSource = "keyboard";
     const forward = this.keys.has("KeyW") || this.keys.has("ArrowUp");
     const reverse = this.keys.has("KeyS") || this.keys.has("ArrowDown");
     const left = this.keys.has("KeyA") || this.keys.has("ArrowLeft");
@@ -612,7 +869,8 @@ export class WorldEngine {
         !forward && !reverse && Math.abs(this.vehicle.currentVehicleSpeed()) > 1
           ? 0.08
           : 0,
-      steering: left ? 1 : right ? -1 : 0,
+      steering:
+        (left ? 1 : right ? -1 : 0) * this.inputPreferences.steeringSensitivity,
       handbrake: this.keys.has("Space"),
     };
   }
@@ -623,8 +881,10 @@ export class WorldEngine {
       this.targetInput(),
       FIXED_STEP,
     );
-    const engineForce =
-      -this.currentInput.throttle * defaultVehicleConfig.engineForce;
+    const engineForce = speedLimitedEngineForce(
+      this.currentInput.throttle,
+      this.vehicle.currentVehicleSpeed() * 3.6,
+    );
     const steering =
       this.currentInput.steering * defaultVehicleConfig.maxSteeringAngle;
     for (const wheel of [0, 1]) {
@@ -648,6 +908,49 @@ export class WorldEngine {
       RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC,
     );
     this.physics.step();
+    this.updateSafeVehicleState(FIXED_STEP);
+  }
+
+  private updateSafeVehicleState(deltaSeconds: number): void {
+    const position = this.chassis.translation();
+    const rotation = this.chassis.rotation();
+    const quaternion = new THREE.Quaternion(
+      rotation.x,
+      rotation.y,
+      rotation.z,
+      rotation.w,
+    );
+    const uprightDot = new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion).y;
+    const size = this.worldSize();
+    const inside =
+      Math.abs(position.x - size.centerX) < size.width / 2 + 20 &&
+      Math.abs(position.z - size.centerZ) < size.depth / 2 + 20;
+    if (
+      isVehiclePoseSafe({
+        uprightDot,
+        height: position.y,
+        insideWorld: inside,
+      })
+    ) {
+      this.unsafeElapsed = 0;
+      this.safeElapsed += deltaSeconds;
+      if (this.safeElapsed >= 0.6) {
+        this.safeElapsed = 0;
+        this.safePosition.set(
+          position.x,
+          Math.max(1.1, position.y),
+          position.z,
+        );
+        this.safeRotation.copy(quaternion);
+      }
+    } else {
+      this.safeElapsed = 0;
+      this.unsafeElapsed += deltaSeconds;
+      if (shouldRecoverVehicle(this.unsafeElapsed, position.y)) {
+        this.recoveryCount += 1;
+        this.resetVehicle();
+      }
+    }
   }
 
   private syncVehicle(deltaSeconds: number): void {
@@ -681,9 +984,32 @@ export class WorldEngine {
     }
   }
 
+  private emitStats(): void {
+    this.callbacks.onStats({
+      roads: this.plan.roads.length,
+      buildings: this.plan.buildings.length,
+      features: this.plan.featureCount,
+      speedKph: Math.round(
+        Math.abs(this.vehicle?.currentVehicleSpeed?.() ?? 0) * 3.6,
+      ),
+      fps: this.fps,
+      chunks: this.plan.chunks.length,
+      triangles: planTriangles(this.plan),
+      buildHash: this.plan.buildHash,
+      buildDurationMs: Math.round(this.buildDurationMs),
+      diagnosticCount: this.plan.diagnostics.length,
+      longFrameCount: this.longFrameCount,
+      recoveryCount: this.recoveryCount,
+      lastRebuiltChunks: this.lastRebuiltChunks,
+      inputSource: this.inputSource,
+    });
+  }
+
   private readonly animate = (time: number): void => {
     if (this.disposed) return;
-    const deltaSeconds = Math.min((time - this.previousTime) / 1_000, 0.1);
+    const rawDeltaSeconds = (time - this.previousTime) / 1_000;
+    const deltaSeconds = Math.min(rawDeltaSeconds, 0.1);
+    if (rawDeltaSeconds > 0.05) this.longFrameCount += 1;
     this.previousTime = time;
     this.accumulator += deltaSeconds;
     while (this.accumulator >= FIXED_STEP) {
@@ -694,16 +1020,16 @@ export class WorldEngine {
     if (this.mode === "inspect") this.controls.update();
     this.renderer.render(this.scene, this.camera);
     this.statsElapsed += deltaSeconds;
+    this.fpsElapsed += rawDeltaSeconds;
+    this.fpsFrames += 1;
+    if (this.fpsElapsed >= 1) {
+      this.fps = Math.round(this.fpsFrames / this.fpsElapsed);
+      this.fpsElapsed = 0;
+      this.fpsFrames = 0;
+    }
     if (this.statsElapsed >= 0.25) {
       this.statsElapsed = 0;
-      this.callbacks.onStats({
-        roads: this.plan.roads.length,
-        buildings: this.plan.buildings.length,
-        features: this.plan.featureCount,
-        speedKph: Math.round(
-          Math.abs(this.vehicle.currentVehicleSpeed()) * 3.6,
-        ),
-      });
+      this.emitStats();
     }
     this.animationFrame = requestAnimationFrame(this.animate);
   };
