@@ -41,6 +41,21 @@ export interface TerrainRoadProfile {
   tunnel: boolean;
 }
 
+export interface TerrainJunctionProfile {
+  center: TerrainPoint;
+  radius: number;
+}
+
+export const ROAD_TERRAIN_CLEARANCE_METERS = 0.05;
+export const ROAD_TERRAIN_BLEND_WIDTH_METERS = 8;
+
+export function roadTerrainCellSafetyMargin(cellSize: number): number {
+  return Math.min(
+    ROAD_TERRAIN_BLEND_WIDTH_METERS * 0.75,
+    cellSize * Math.SQRT2,
+  );
+}
+
 export interface ElevationSampler {
   referenceHeight: number;
   atWgs84(longitude: number, latitude: number): number;
@@ -135,38 +150,255 @@ function localBounds(
   };
 }
 
-function closestProfileHeight(
-  road: TerrainRoadProfile,
-  x: number,
-  z: number,
-): { distance: number; height: number } {
-  let result = { distance: Number.POSITIVE_INFINITY, height: 0 };
-  for (let index = 0; index < road.points.length - 1; index += 1) {
-    const start = road.points[index];
-    const end = road.points[index + 1];
-    if (!start || !end) continue;
-    const dx = end.x - start.x;
-    const dz = end.z - start.z;
-    const lengthSquared = dx * dx + dz * dz;
-    const ratio =
-      lengthSquared === 0
-        ? 0
-        : clamp(
-            ((x - start.x) * dx + (z - start.z) * dz) / lengthSquared,
-            0,
-            1,
-          );
-    const candidateX = start.x + dx * ratio;
-    const candidateZ = start.z + dz * ratio;
-    const distance = Math.hypot(x - candidateX, z - candidateZ);
-    if (distance < result.distance) {
-      result = {
-        distance,
-        height: start.y + (end.y - start.y) * ratio,
-      };
+interface TerrainSegmentReference {
+  kind: "segment";
+  roadIndex: number;
+  start: TerrainPoint;
+  end: TerrainPoint;
+}
+
+interface TerrainJunctionReference {
+  kind: "junction";
+  junctionIndex: number;
+}
+
+type TerrainCorridorReference =
+  TerrainSegmentReference | TerrainJunctionReference;
+
+interface TerrainCorridorIndex {
+  bucketSize: number;
+  buckets: Map<string, TerrainCorridorReference[]>;
+  roads: TerrainRoadProfile[];
+  junctions: TerrainJunctionProfile[];
+  cellSafetyMargin: number;
+}
+
+interface CorridorMatch {
+  distance: number;
+  height: number;
+}
+
+function corridorBucketKey(x: number, z: number, bucketSize: number): string {
+  return `${Math.floor(x / bucketSize)}:${Math.floor(z / bucketSize)}`;
+}
+
+function addCorridorReference(
+  buckets: Map<string, TerrainCorridorReference[]>,
+  bucketSize: number,
+  reference: TerrainCorridorReference,
+  bounds: { minX: number; minZ: number; maxX: number; maxZ: number },
+): void {
+  const minBucketX = Math.floor(bounds.minX / bucketSize);
+  const maxBucketX = Math.floor(bounds.maxX / bucketSize);
+  const minBucketZ = Math.floor(bounds.minZ / bucketSize);
+  const maxBucketZ = Math.floor(bounds.maxZ / bucketSize);
+  for (let bucketX = minBucketX; bucketX <= maxBucketX; bucketX += 1) {
+    for (let bucketZ = minBucketZ; bucketZ <= maxBucketZ; bucketZ += 1) {
+      const key = `${bucketX}:${bucketZ}`;
+      const entries = buckets.get(key) ?? [];
+      entries.push(reference);
+      buckets.set(key, entries);
     }
   }
-  return result;
+}
+
+function buildTerrainCorridorIndex(
+  roads: TerrainRoadProfile[],
+  junctions: TerrainJunctionProfile[],
+  cellSize: number,
+): TerrainCorridorIndex {
+  const bucketSize = Math.max(16, Math.min(64, cellSize * 8));
+  const buckets = new Map<string, TerrainCorridorReference[]>();
+  roads.forEach((road, roadIndex) => {
+    const reach = road.width / 2 + ROAD_TERRAIN_BLEND_WIDTH_METERS;
+    for (
+      let pointIndex = 0;
+      pointIndex < road.points.length - 1;
+      pointIndex += 1
+    ) {
+      const start = road.points[pointIndex];
+      const end = road.points[pointIndex + 1];
+      if (!start || !end) continue;
+      const reference: TerrainSegmentReference = {
+        kind: "segment",
+        roadIndex,
+        start,
+        end,
+      };
+      addCorridorReference(buckets, bucketSize, reference, {
+        minX: Math.min(start.x, end.x) - reach,
+        minZ: Math.min(start.z, end.z) - reach,
+        maxX: Math.max(start.x, end.x) + reach,
+        maxZ: Math.max(start.z, end.z) + reach,
+      });
+    }
+  });
+  junctions.forEach((junction, junctionIndex) => {
+    const reach = junction.radius + ROAD_TERRAIN_BLEND_WIDTH_METERS;
+    addCorridorReference(
+      buckets,
+      bucketSize,
+      { kind: "junction", junctionIndex },
+      {
+        minX: junction.center.x - reach,
+        minZ: junction.center.z - reach,
+        maxX: junction.center.x + reach,
+        maxZ: junction.center.z + reach,
+      },
+    );
+  });
+  return {
+    bucketSize,
+    buckets,
+    roads,
+    junctions,
+    cellSafetyMargin: roadTerrainCellSafetyMargin(cellSize),
+  };
+}
+
+function closestSegmentHeight(
+  segment: TerrainSegmentReference,
+  x: number,
+  z: number,
+): CorridorMatch {
+  const dx = segment.end.x - segment.start.x;
+  const dz = segment.end.z - segment.start.z;
+  const lengthSquared = dx * dx + dz * dz;
+  const ratio =
+    lengthSquared === 0
+      ? 0
+      : clamp(
+          ((x - segment.start.x) * dx + (z - segment.start.z) * dz) /
+            lengthSquared,
+          0,
+          1,
+        );
+  const candidateX = segment.start.x + dx * ratio;
+  const candidateZ = segment.start.z + dz * ratio;
+  return {
+    distance: Math.hypot(x - candidateX, z - candidateZ),
+    height: segment.start.y + (segment.end.y - segment.start.y) * ratio,
+  };
+}
+
+function linearCorridorInfluence(distance: number, radius: number): number {
+  if (distance <= radius) return 1;
+  return clamp(1 - (distance - radius) / ROAD_TERRAIN_BLEND_WIDTH_METERS, 0, 1);
+}
+
+function cellSafeCutInfluence(
+  distance: number,
+  radius: number,
+  cellSafetyMargin: number,
+): number {
+  const core = radius + cellSafetyMargin;
+  const outer = radius + ROAD_TERRAIN_BLEND_WIDTH_METERS;
+  if (distance <= core) return 1;
+  if (distance >= outer) return 0;
+  const progress = (distance - core) / Math.max(0.001, outer - core);
+  const smooth = progress * progress * (3 - 2 * progress);
+  return 1 - smooth;
+}
+
+function gradeTerrainHeight(
+  originalHeight: number,
+  x: number,
+  z: number,
+  corridors: TerrainCorridorIndex,
+): number {
+  const references =
+    corridors.buckets.get(corridorBucketKey(x, z, corridors.bucketSize)) ?? [];
+  const roadMatches = new Map<number, CorridorMatch>();
+  const junctionMatches: Array<{
+    junction: TerrainJunctionProfile;
+    distance: number;
+  }> = [];
+
+  for (const reference of references) {
+    if (reference.kind === "segment") {
+      const road = corridors.roads[reference.roadIndex];
+      if (!road) continue;
+      const match = closestSegmentHeight(reference, x, z);
+      if (match.distance > road.width / 2 + ROAD_TERRAIN_BLEND_WIDTH_METERS)
+        continue;
+      const current = roadMatches.get(reference.roadIndex);
+      if (!current || match.distance < current.distance)
+        roadMatches.set(reference.roadIndex, match);
+      continue;
+    }
+    const junction = corridors.junctions[reference.junctionIndex];
+    if (!junction) continue;
+    const distance = Math.hypot(x - junction.center.x, z - junction.center.z);
+    if (distance <= junction.radius + ROAD_TERRAIN_BLEND_WIDTH_METERS)
+      junctionMatches.push({ junction, distance });
+  }
+
+  const groundCandidates: Array<{ target: number; influence: number }> = [];
+  for (const [roadIndex, match] of roadMatches) {
+    const road = corridors.roads[roadIndex];
+    if (!road || road.tunnel) continue;
+    const radius = road.width / 2;
+    const target = match.height - ROAD_TERRAIN_CLEARANCE_METERS;
+    const edgeInfluence = linearCorridorInfluence(match.distance, radius);
+    const influence =
+      target < originalHeight
+        ? Math.max(
+            edgeInfluence,
+            cellSafeCutInfluence(
+              match.distance,
+              radius,
+              corridors.cellSafetyMargin,
+            ),
+          )
+        : edgeInfluence;
+    if (influence > 0) groundCandidates.push({ target, influence });
+  }
+  for (const { junction, distance } of junctionMatches) {
+    const target = junction.center.y - ROAD_TERRAIN_CLEARANCE_METERS;
+    const edgeInfluence = linearCorridorInfluence(distance, junction.radius);
+    const influence =
+      target < originalHeight
+        ? Math.max(
+            edgeInfluence,
+            cellSafeCutInfluence(
+              distance,
+              junction.radius,
+              corridors.cellSafetyMargin,
+            ),
+          )
+        : edgeInfluence;
+    if (influence > 0) groundCandidates.push({ target, influence });
+  }
+
+  let height = originalHeight;
+  if (groundCandidates.length > 0) {
+    const totalInfluence = groundCandidates.reduce(
+      (total, candidate) => total + candidate.influence,
+      0,
+    );
+    const target =
+      groundCandidates.reduce(
+        (total, candidate) => total + candidate.target * candidate.influence,
+        0,
+      ) / totalInfluence;
+    const strongestInfluence = Math.max(
+      ...groundCandidates.map((candidate) => candidate.influence),
+    );
+    height += (target - height) * strongestInfluence;
+  }
+
+  for (const [roadIndex, match] of roadMatches) {
+    const road = corridors.roads[roadIndex];
+    if (!road?.tunnel) continue;
+    const target = match.height - ROAD_TERRAIN_CLEARANCE_METERS;
+    const influence = cellSafeCutInfluence(
+      match.distance,
+      road.width / 2,
+      corridors.cellSafetyMargin,
+    );
+    height = Math.min(height, height + (target - height) * influence);
+  }
+  return height;
 }
 
 export function buildTerrainPlan(input: {
@@ -175,10 +407,19 @@ export function buildTerrainPlan(input: {
   elevation: ElevationSnapshot;
   chunkSize: number;
   cellsPerChunk?: number;
+  roads?: TerrainRoadProfile[];
+  junctions?: TerrainJunctionProfile[];
+  /** @deprecated Use roads with tunnel=true. */
   tunnelRoads?: TerrainRoadProfile[];
 }): TerrainPlan {
   const cellsPerChunk = input.cellsPerChunk ?? 64;
   const sampler = createElevationSampler(input.elevation, input.anchor);
+  const cellSize = input.chunkSize / cellsPerChunk;
+  const corridors = buildTerrainCorridorIndex(
+    input.roads ?? input.tunnelRoads ?? [],
+    input.junctions ?? [],
+    cellSize,
+  );
   const bounds = localBounds(input.bounds, input.anchor);
   const padding = 40;
   const minChunkX = Math.floor((bounds.minX - padding) / input.chunkSize);
@@ -196,20 +437,12 @@ export function buildTerrainPlan(input: {
         const x = minX + (xIndex / cellsPerChunk) * input.chunkSize;
         for (let zIndex = 0; zIndex <= cellsPerChunk; zIndex += 1) {
           const z = minZ + (zIndex / cellsPerChunk) * input.chunkSize;
-          let height = sampler.atLocal(x, z);
-          for (const road of input.tunnelRoads ?? []) {
-            if (!road.tunnel) continue;
-            const closest = closestProfileHeight(road, x, z);
-            const halfWidth = road.width / 2;
-            const shoulderWidth = 6;
-            if (closest.distance > halfWidth + shoulderWidth) continue;
-            const blend =
-              closest.distance <= halfWidth
-                ? 1
-                : 1 - (closest.distance - halfWidth) / shoulderWidth;
-            const cutHeight = closest.height - 0.05;
-            height = Math.min(height, height + (cutHeight - height) * blend);
-          }
+          const height = gradeTerrainHeight(
+            sampler.atLocal(x, z),
+            x,
+            z,
+            corridors,
+          );
           heights.push(Number(height.toFixed(4)));
         }
       }

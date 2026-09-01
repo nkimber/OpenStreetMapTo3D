@@ -42,7 +42,7 @@ The local world is divided into deterministic 256 metre square chunks.
 
 Each chunk may contain:
 
-- An 8 m visual/physics heightfield grid with boundary samples shared by its
+- A 4 m visual/physics heightfield grid with boundary samples shared by its
   neighbors
 - Road surface mesh
 - Building mesh or instanced objects
@@ -72,12 +72,15 @@ Implemented generation stages:
 2. Densify centerlines to at most 4 m and bilinearly sample the immutable DEM.
 3. Smooth longitudinal grades while keeping each cross-section level.
 4. Apply bridge, tunnel, and OSM-layer separation with endpoint ramps.
-5. Create continuous two-sided strips with stable miter joins and blended
+5. Grade the shared terrain heightfield beneath ordinary roads and junctions.
+   High terrain is cut with a cell-safety margin; low terrain is filled along
+   the shoulder profile. Both return to the original DEM outside the corridor.
+6. Create continuous two-sided strips with stable miter joins and blended
    ground-road shoulders.
-6. Group equal graph nodes per vertical layer and create intersection/end-cap
+7. Group equal graph nodes per vertical layer and create intersection/end-cap
    surfaces.
-7. Diagnose grades above 20% and retain 3D centerlines for exact spawn snapping.
-8. Use the road and junction triangle strips as fixed Rapier colliders.
+8. Diagnose grades above 20% and retain 3D centerlines for exact spawn snapping.
+9. Use the road and junction triangle strips as fixed Rapier colliders.
 
 Bridge decks are raised separate surfaces with matching colliders. A heightfield
 cannot contain a hole or overhang, so a tunnel lowers nearby terrain into a
@@ -116,11 +119,13 @@ anchor, producing local ENU-relative `Y` values. The absolute reference height
 remains in `TerrainPlan` for inspection.
 
 Terrain chunks align to the 256 m world lattice and include a 40 m safety
-margin. The default 32 × 32 cells create an 8 m grid. Values are serialized in
+margin. The default 64 × 64 cells create a 4 m grid. Values are serialized in
 Rapier-compatible x-major order; adjacent chunks sample the same coordinates at
 their borders. Three.js triangulates these heights and Rapier consumes the same
 array as a heightfield collider. Tests ray-cast the collider and compare it with
-the visual plan sampler.
+the visual plan sampler. Ground-road corridors and junction discs are graded in
+this shared array, so hidden terrain cannot remain as a competing collider below
+the road surface.
 
 Land-use overlays are resampled onto the terrain. Buildings remain vertical and
 start at the median height of their outer footprint. Water currently follows

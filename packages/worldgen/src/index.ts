@@ -12,6 +12,8 @@ import { wgs84ToLocal } from "@osm3d/geo";
 import {
   buildTerrainPlan,
   createElevationSampler,
+  ROAD_TERRAIN_BLEND_WIDTH_METERS,
+  roadTerrainCellSafetyMargin,
   type ElevationSampler,
   type TerrainPlan,
 } from "./terrain.js";
@@ -19,14 +21,22 @@ import {
 export {
   buildTerrainPlan,
   createElevationSampler,
+  ROAD_TERRAIN_BLEND_WIDTH_METERS,
+  ROAD_TERRAIN_CLEARANCE_METERS,
+  roadTerrainCellSafetyMargin,
   sampleElevationSnapshot,
   sampleTerrainPlan,
 } from "./terrain.js";
-export type { TerrainChunkPlan, TerrainPlan } from "./terrain.js";
+export type {
+  TerrainChunkPlan,
+  TerrainJunctionProfile,
+  TerrainPlan,
+  TerrainRoadProfile,
+} from "./terrain.js";
 
-export const WORLD_GENERATOR_VERSION = "0.3.0";
+export const WORLD_GENERATOR_VERSION = "0.4.0";
 export const DEFAULT_CHUNK_SIZE_METERS = 256;
-export const DEFAULT_TERRAIN_CELLS_PER_CHUNK = 32;
+export const DEFAULT_TERRAIN_CELLS_PER_CHUNK = 64;
 
 export interface LocalPoint2 {
   x: number;
@@ -328,12 +338,13 @@ function buildRoadShoulderSurface(
   points: LocalPoint3[],
   width: number,
   sampleTerrain: (x: number, z: number) => number,
+  transitionWidth: number,
 ): SurfaceMeshPlan {
   if (points.length < 2) return { positions: [], indices: [] };
   const positions: number[] = [];
   const indices: number[] = [];
   const inner = width / 2;
-  const outer = inner + 4;
+  const outer = inner + transitionWidth;
   for (let index = 0; index < points.length; index += 1) {
     const point = points[index];
     if (!point) continue;
@@ -832,6 +843,11 @@ export function buildWorldPlan(
 ): WorldPlan {
   const generatorVersion = options.generatorVersion ?? WORLD_GENERATOR_VERSION;
   const chunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE_METERS;
+  const terrainCellsPerChunk =
+    options.terrainCellsPerChunk ?? DEFAULT_TERRAIN_CELLS_PER_CHUNK;
+  const roadShoulderWidth =
+    ROAD_TERRAIN_BLEND_WIDTH_METERS +
+    roadTerrainCellSafetyMargin(chunkSize / terrainCellsPerChunk);
   const elevationSampler = options.elevation
     ? createElevationSampler(options.elevation, anchor)
     : undefined;
@@ -916,12 +932,13 @@ export function buildWorldPlan(
         widthSource: width.source,
         points,
         mesh: buildRoadSurface(points, width.width),
-        ...(!bridge && !tunnel && elevationSampler
+        ...(!bridge && !tunnel && layer === 0 && elevationSampler
           ? {
               shoulderMesh: buildRoadShoulderSurface(
                 points,
                 width.width,
                 elevationSampler.atLocal,
+                roadShoulderWidth,
               ),
             }
           : {}),
@@ -977,6 +994,10 @@ export function buildWorldPlan(
     }
   }
 
+  const junctions = createJunctions(roads);
+  const groundRoads = roads.filter(
+    (road) => !road.bridge && !road.tunnel && road.layer === 0,
+  );
   const terrain =
     options.elevation && options.bounds
       ? buildTerrainPlan({
@@ -984,18 +1005,20 @@ export function buildWorldPlan(
           anchor,
           elevation: options.elevation,
           chunkSize,
-          cellsPerChunk:
-            options.terrainCellsPerChunk ?? DEFAULT_TERRAIN_CELLS_PER_CHUNK,
-          tunnelRoads: roads
-            .filter((road) => road.tunnel)
+          cellsPerChunk: terrainCellsPerChunk,
+          roads: roads
+            .filter((road) => !road.bridge && (road.tunnel || road.layer === 0))
             .map((road) => ({
               points: road.points,
               width: road.width,
               tunnel: road.tunnel,
             })),
+          junctions: createJunctions(groundRoads).map((junction) => ({
+            center: junction.center,
+            radius: junction.radius,
+          })),
         })
       : undefined;
-  const junctions = createJunctions(roads);
   const chunkResult = buildChunks(roads, buildings, land, junctions, chunkSize);
   const buildHash = deterministicHash({
     sourceSnapshotId: options.sourceSnapshotId,
@@ -1007,8 +1030,7 @@ export function buildWorldPlan(
     chunkSize,
     bounds: options.bounds,
     elevationContentHash: options.elevation?.contentHash,
-    terrainCellsPerChunk:
-      options.terrainCellsPerChunk ?? DEFAULT_TERRAIN_CELLS_PER_CHUNK,
+    terrainCellsPerChunk,
   });
   return {
     roads,

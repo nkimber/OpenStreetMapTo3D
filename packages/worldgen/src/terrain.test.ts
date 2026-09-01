@@ -5,9 +5,12 @@ import type {
   NormalizedFeature,
 } from "@osm3d/contracts";
 import {
+  buildTerrainPlan,
   buildWorldPlan,
+  ROAD_TERRAIN_CLEARANCE_METERS,
   resolveSpawnPose,
   sampleElevationSnapshot,
+  sampleTerrainPlan,
 } from "./index.js";
 
 const bounds = {
@@ -38,6 +41,46 @@ const elevation: ElevationSnapshot = {
     license: "test",
   },
 };
+
+const corridorBounds = {
+  west: -75.0001,
+  south: 39.9999,
+  east: -74.9999,
+  north: 40.0001,
+};
+
+const flatElevation: ElevationSnapshot = {
+  ...elevation,
+  dataset: "flat corridor test",
+  bounds: corridorBounds,
+  columns: 2,
+  rows: 2,
+  spacingMeters: { eastWest: 20, northSouth: 20 },
+  heights: [100, 100, 100, 100],
+  minHeight: 100,
+  maxHeight: 100,
+};
+
+function corridorTerrain(input: {
+  roads?: Array<{
+    points: Array<{ x: number; y: number; z: number }>;
+    width: number;
+    tunnel: boolean;
+  }>;
+  junctions?: Array<{
+    center: { x: number; y: number; z: number };
+    radius: number;
+  }>;
+}) {
+  return buildTerrainPlan({
+    bounds: corridorBounds,
+    anchor: { longitude: -75, latitude: 40, height: 0 },
+    elevation: flatElevation,
+    chunkSize: 256,
+    cellsPerChunk: 64,
+    ...input,
+  });
+}
 
 const settings: GenerationSettings = {
   buildingLevelHeight: 3,
@@ -97,7 +140,7 @@ describe("elevation-aware world generation", () => {
       { longitude: -75, latitude: 40, height: 0 },
       settings,
       [],
-      { bounds, elevation, chunkSize: 256, terrainCellsPerChunk: 16 },
+      { bounds, elevation, chunkSize: 256, terrainCellsPerChunk: 64 },
     );
     expect(plan.terrain?.chunks.length).toBeGreaterThan(1);
     const adjacent = plan.terrain?.chunks.find((left) =>
@@ -128,6 +171,109 @@ describe("elevation-aware world generation", () => {
     expect(Math.hypot(spawn.x, spawn.z)).toBeLessThan(0.1);
     expect(spawn.y).toBeGreaterThan(0);
     expect(Number.isFinite(spawn.pitch)).toBe(true);
+    for (const point of road?.points.filter((_, index) => index % 8 === 0) ??
+      []) {
+      expect(
+        point.y - sampleTerrainPlan(plan.terrain, point.x, point.z),
+      ).toBeGreaterThan(0.015);
+    }
+  });
+
+  it("cuts and fills ground-road corridors while returning to the source terrain", () => {
+    const raisedRoad = {
+      points: [
+        { x: -20, y: 5, z: 0 },
+        { x: 20, y: 5, z: 0 },
+      ],
+      width: 6,
+      tunnel: false,
+    };
+    const raised = corridorTerrain({ roads: [raisedRoad] });
+    expect(sampleTerrainPlan(raised, 0, 0)).toBeCloseTo(
+      5 - ROAD_TERRAIN_CLEARANCE_METERS,
+      3,
+    );
+    expect(sampleTerrainPlan(raised, 0, 7)).toBeGreaterThan(0);
+    expect(sampleTerrainPlan(raised, 0, 7)).toBeLessThan(5);
+    expect(sampleTerrainPlan(raised, 0, 16)).toBeCloseTo(0, 6);
+
+    const lowered = corridorTerrain({
+      roads: [
+        {
+          ...raisedRoad,
+          points: raisedRoad.points.map((point) => ({ ...point, y: -5 })),
+        },
+      ],
+    });
+    expect(sampleTerrainPlan(lowered, 0, 0)).toBeCloseTo(
+      -5 - ROAD_TERRAIN_CLEARANCE_METERS,
+      3,
+    );
+    expect(sampleTerrainPlan(lowered, 0, 7)).toBeLessThan(-4.9);
+    expect(sampleTerrainPlan(lowered, 0, 16)).toBeCloseTo(0, 6);
+  });
+
+  it("grades junction discs and keeps tunnels cut-only", () => {
+    const junction = corridorTerrain({
+      junctions: [{ center: { x: 0, y: 3, z: 0 }, radius: 5 }],
+    });
+    expect(sampleTerrainPlan(junction, 0, 0)).toBeCloseTo(
+      3 - ROAD_TERRAIN_CLEARANCE_METERS,
+      3,
+    );
+
+    const raisedTunnel = corridorTerrain({
+      roads: [
+        {
+          points: [
+            { x: -20, y: 5, z: 0 },
+            { x: 20, y: 5, z: 0 },
+          ],
+          width: 6,
+          tunnel: true,
+        },
+      ],
+    });
+    expect(sampleTerrainPlan(raisedTunnel, 0, 0)).toBeCloseTo(0, 6);
+
+    const loweredTunnel = corridorTerrain({
+      roads: [
+        {
+          points: [
+            { x: -20, y: -5, z: 0 },
+            { x: 20, y: -5, z: 0 },
+          ],
+          width: 6,
+          tunnel: true,
+        },
+      ],
+    });
+    expect(sampleTerrainPlan(loweredTunnel, 0, 0)).toBeCloseTo(
+      -5 - ROAD_TERRAIN_CLEARANCE_METERS,
+      3,
+    );
+  });
+
+  it("leaves bridge terrain untouched beneath the raised deck", () => {
+    const bridgeFeatures = features.map((feature) =>
+      feature.kind === "road"
+        ? { ...feature, tags: { ...feature.tags, bridge: "yes" } }
+        : feature,
+    );
+    const plan = buildWorldPlan(
+      bridgeFeatures,
+      { longitude: -75, latitude: 40, height: 0 },
+      settings,
+      [],
+      { bounds, elevation, terrainCellsPerChunk: 64 },
+    );
+    const road = plan.roads[0];
+    const midpoint = road?.points[Math.floor((road.points.length - 1) / 2)];
+    expect(midpoint).toBeDefined();
+    expect(
+      (midpoint?.y ?? 0) -
+        sampleTerrainPlan(plan.terrain, midpoint?.x ?? 0, midpoint?.z ?? 0),
+    ).toBeGreaterThan(2);
   });
 
   it("includes the elevation snapshot identity in the deterministic build hash", () => {

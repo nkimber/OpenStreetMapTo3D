@@ -27,12 +27,15 @@ project is saved.
   terrain plan.
 - Terrain uses the same deterministic 256 m chunk lattice as other generated
   content. Adjacent chunks sample the same boundary coordinates. The default
-  grid has 32 cells per chunk (8 m spacing); roads are densified to at most 4 m.
+  grid has 64 cells per chunk (4 m spacing); roads are densified to at most 4 m.
 - One structured-cloneable terrain plan creates both the Three.js mesh and the
   Rapier heightfield. Rapier's required x-major height order is explicit and
   covered by a collider ray-cast test.
-- Ground roads are grade-smoothed, have level cross-sections and blended visual
-  shoulders, and use their rendered triangle strip as the drivable collider.
+- Ground roads are grade-smoothed and have level cross-sections. The shared
+  heightfield is cut or filled beneath their road and junction footprints, with
+  a cell-aware safety margin for cuts and a transition back to the source DEM.
+  Blended visual shoulders cover that transition, and the rendered road strip
+  remains the drivable collider.
   Buildings remain vertical and start at the median footprint elevation.
 - Bridges use separate raised deck geometry and colliders. Because a heightfield
   cannot represent an overhang, tunnels are represented as diagnosed open cuts
