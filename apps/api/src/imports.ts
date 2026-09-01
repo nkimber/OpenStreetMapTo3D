@@ -17,6 +17,11 @@ import { fetchOsmData } from "./providers.js";
 
 const gzipAsync = promisify(gzip);
 
+interface CachedSnapshot {
+  id: string;
+  feature_count: number;
+}
+
 function boundsPolygon(bounds: Wgs84Bounds): object {
   return {
     type: "Polygon",
@@ -37,17 +42,50 @@ export async function createImportJob(
   request: ImportRequest,
 ): Promise<ImportJob> {
   const id = randomUUID();
+  const cached = await pool.query<CachedSnapshot>(
+    `SELECT snapshot.id, COUNT(feature.source_id)::integer AS feature_count
+     FROM source_snapshots snapshot
+     LEFT JOIN osm_features feature ON feature.snapshot_id = snapshot.id
+     WHERE snapshot.provider = $1
+       AND snapshot.query_version = $2
+       AND snapshot.query->'bounds' = $3::jsonb
+     GROUP BY snapshot.id, snapshot.retrieved_at
+     ORDER BY snapshot.retrieved_at DESC
+     LIMIT 1`,
+    [request.provider, request.queryVersion, JSON.stringify(request.bounds)],
+  );
+  const snapshot = cached.rows[0];
+  const result = snapshot
+    ? {
+        snapshotId: snapshot.id,
+        featureCount: snapshot.feature_count,
+        diagnostics: [],
+      }
+    : undefined;
   await pool.query(
-    `INSERT INTO jobs (id, job_type, status, input, progress, stage)
-     VALUES ($1, 'osm-import', 'queued', $2::jsonb, 0, 'queued')`,
-    [id, JSON.stringify(request)],
+    `INSERT INTO jobs
+       (id, job_type, status, input, progress, stage, result, completed_at)
+     VALUES
+       ($1, 'osm-import', $3, $2::jsonb, $4, $5, $6::jsonb,
+        CASE WHEN $3 = 'complete' THEN now() ELSE NULL END)`,
+    [
+      id,
+      JSON.stringify(request),
+      snapshot ? "complete" : "queued",
+      snapshot ? 100 : 0,
+      snapshot ? "cached" : "queued",
+      result ? JSON.stringify(result) : null,
+    ],
   );
   return {
     id,
-    status: "queued",
-    progress: 0,
-    stage: "queued",
+    status: snapshot ? "complete" : "queued",
+    progress: snapshot ? 100 : 0,
+    stage: snapshot ? "cached" : "queued",
     diagnostics: [],
+    ...(snapshot
+      ? { snapshotId: snapshot.id, featureCount: snapshot.feature_count }
+      : {}),
   };
 }
 

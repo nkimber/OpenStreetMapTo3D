@@ -214,4 +214,39 @@ describe("world generation defaults", () => {
     expect(pose.sourceId).toBe(road.sourceId);
     expect(Number.isFinite(pose.yaw)).toBe(true);
   });
+
+  it("places the default spawn on the road closest to the world anchor", () => {
+    const distantRoad: NormalizedFeature = {
+      ...feature("road", {}),
+      sourceId: "osm:way:distant",
+      geometry: {
+        type: "LineString" as const,
+        coordinates: [
+          [-74.99, 40.01],
+          [-74.98, 40.01],
+        ],
+      },
+    };
+    const nearbyRoad: NormalizedFeature = {
+      ...feature("road", {}),
+      sourceId: "osm:way:nearby",
+      geometry: {
+        type: "LineString" as const,
+        coordinates: [
+          [-75.001, 40],
+          [-74.999, 40],
+        ],
+      },
+    };
+    const plan = buildWorldPlan(
+      [distantRoad, nearbyRoad],
+      { longitude: -75, latitude: 40, height: 0 },
+      settings,
+    );
+
+    const pose = resolveSpawnPose(plan, []);
+
+    expect(pose.sourceId).toBe(nearbyRoad.sourceId);
+    expect(Math.hypot(pose.x, pose.z)).toBeLessThan(0.1);
+  });
 });

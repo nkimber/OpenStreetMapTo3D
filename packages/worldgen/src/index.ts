@@ -796,16 +796,31 @@ export function resolveSpawnPose(
   const spawnOverride = [...overrides]
     .reverse()
     .find((override) => override.operation === "set-spawn");
-  const road =
-    plan.roads.find((item) => item.sourceId === spawnOverride?.targetId) ??
-    plan.roads.find((item) => item.points.length > 1);
-  if (!road) return { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 };
-  const x = spawnOverride?.payload.x;
-  const z = spawnOverride?.payload.z;
-  if (typeof x === "number" && typeof z === "number") {
-    return closestPointOnRoad(road, { x, z });
+  if (spawnOverride) {
+    const road =
+      plan.roads.find((item) => item.sourceId === spawnOverride.targetId) ??
+      plan.roads.find((item) => item.points.length > 1);
+    if (!road) return { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 };
+    const x = spawnOverride.payload.x;
+    const z = spawnOverride.payload.z;
+    if (typeof x === "number" && typeof z === "number") {
+      return closestPointOnRoad(road, { x, z });
+    }
+    return closestPointOnRoad(road, road.points[0] ?? { x: 0, z: 0 });
   }
-  return closestPointOnRoad(road, road.points[0] ?? { x: 0, z: 0 });
+
+  let closestPose: SpawnPose | undefined;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const road of plan.roads) {
+    if (road.points.length < 2) continue;
+    const pose = closestPointOnRoad(road, { x: 0, z: 0 });
+    const distance = Math.hypot(pose.x, pose.z);
+    if (distance < closestDistance) {
+      closestPose = pose;
+      closestDistance = distance;
+    }
+  }
+  return closestPose ?? { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 };
 }
 
 export function buildWorldPlan(

@@ -79,10 +79,12 @@ export async function buildApp({
       });
     }
     const job = await createImportJob(pool, body);
-    setImmediate(() => {
-      void executeImportJob(pool, config, job.id, body);
-    });
-    return reply.code(202).send(job);
+    if (job.status === "queued") {
+      setImmediate(() => {
+        void executeImportJob(pool, config, job.id, body);
+      });
+    }
+    return reply.code(job.status === "complete" ? 200 : 202).send(job);
   });
 
   app.get("/api/imports/:id", async (request, reply) => {

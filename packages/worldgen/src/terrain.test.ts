@@ -125,7 +125,8 @@ describe("elevation-aware world generation", () => {
     ).toBeGreaterThan(10);
     expect(plan.buildings[0]?.baseHeight).toBeGreaterThan(5);
     const spawn = resolveSpawnPose(plan, []);
-    expect(spawn.y).toBeCloseTo(road?.points[0]?.y ?? 0, 4);
+    expect(Math.hypot(spawn.x, spawn.z)).toBeLessThan(0.1);
+    expect(spawn.y).toBeGreaterThan(0);
     expect(Number.isFinite(spawn.pitch)).toBe(true);
   });
 

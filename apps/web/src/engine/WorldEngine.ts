@@ -31,6 +31,7 @@ import {
 } from "@osm3d/worldgen";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { vehicleMapPose, type VehicleMapPose } from "./driveMapPose.js";
 import { WorldBuilderClient } from "./worldBuilder.js";
 
 const FIXED_STEP = 1 / 60;
@@ -48,6 +49,7 @@ export interface EngineStats {
   elevationProvider: string;
   elevationRange: number;
   vehicleElevation: number;
+  vehicleMapPose: VehicleMapPose;
   buildHash: string;
   buildDurationMs: number;
   diagnosticCount: number;
@@ -1149,6 +1151,8 @@ export class WorldEngine {
   }
 
   private emitStats(): void {
+    const vehiclePosition = this.chassis.translation();
+    const vehicleRotation = this.chassis.rotation();
     this.callbacks.onStats({
       roads: this.plan.roads.length,
       buildings: this.plan.buildings.length,
@@ -1168,8 +1172,11 @@ export class WorldEngine {
       elevationRange: this.plan.terrain
         ? this.plan.terrain.sourceMaxHeight - this.plan.terrain.sourceMinHeight
         : 0,
-      vehicleElevation: Number(
-        (this.chassis?.translation?.().y ?? this.spawnPosition.y).toFixed(1),
+      vehicleElevation: Number(vehiclePosition.y.toFixed(1)),
+      vehicleMapPose: vehicleMapPose(
+        vehiclePosition,
+        vehicleRotation,
+        this.definition.world.anchor,
       ),
       buildHash: this.plan.buildHash,
       buildDurationMs: Math.round(this.buildDurationMs),

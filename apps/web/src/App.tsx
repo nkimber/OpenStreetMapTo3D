@@ -10,14 +10,21 @@ import type {
   GenerationSettings,
   GeocodeResult,
   ImportJob,
+  ImportRequest,
   SnapshotPreview,
   Wgs84Position,
   WorldDefinition,
   WorldSummary,
 } from "@osm3d/contracts";
-import { api } from "./api.js";
+import { api, ApiClientError } from "./api.js";
 import { MapPreview } from "./components/MapPreview.js";
+import {
+  findCachedDownload,
+  forgetDownloadedData,
+  rememberDownloadedData,
+} from "./downloadCache.js";
 import { boundsFromCenter, formatArea } from "./geo.js";
+import { loadRecentSearches, rememberRecentSearch } from "./recentSearches.js";
 
 const WorldWorkspace = lazy(async () => {
   const module = await import("./components/WorldWorkspace.js");
@@ -55,6 +62,8 @@ export function App() {
   );
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<GeocodeResult[]>([]);
+  const [recentSearches, setRecentSearches] = useState(loadRecentSearches);
+  const [recentSearchesOpen, setRecentSearchesOpen] = useState(false);
   const [importJob, setImportJob] = useState<ImportJob>();
   const [preview, setPreview] = useState<SnapshotPreview>();
   const [worldName, setWorldName] = useState("My neighborhood");
@@ -83,6 +92,7 @@ export function App() {
 
   const search = async (event: FormEvent) => {
     event.preventDefault();
+    setRecentSearchesOpen(false);
     setSearching(true);
     setError(undefined);
     try {
@@ -104,6 +114,9 @@ export function App() {
       latitude: result.latitude,
       height: 0,
     };
+    setQuery(result.displayName);
+    setRecentSearches((current) => rememberRecentSearch(result, current));
+    setRecentSearchesOpen(false);
     setCenter(next);
     setCoordinateLatitude(String(next.latitude));
     setCoordinateLongitude(String(next.longitude));
@@ -137,8 +150,28 @@ export function App() {
   const importArea = async () => {
     setError(undefined);
     setImportJob(undefined);
+    const request: ImportRequest = { provider, bounds, queryVersion: 1 };
     try {
-      let job = await api.createImport({ provider, bounds, queryVersion: 1 });
+      const cached = findCachedDownload(request);
+      if (cached?.snapshotId) {
+        try {
+          const cachedPreview = await api.getSnapshotPreview(cached.snapshotId);
+          setImportJob({ ...cached, stage: "browser-cache" });
+          setPreview(cachedPreview);
+          return;
+        } catch (reason) {
+          if (
+            reason instanceof ApiClientError &&
+            reason.code === "SNAPSHOT_NOT_FOUND"
+          ) {
+            forgetDownloadedData(request);
+          } else {
+            throw reason;
+          }
+        }
+      }
+
+      let job = await api.createImport(request);
       setImportJob(job);
       while (!["complete", "failed", "cancelled"].includes(job.status)) {
         await sleep(450);
@@ -147,8 +180,11 @@ export function App() {
       }
       if (job.status === "failed")
         throw new Error(job.errorMessage ?? "The map import failed.");
-      if (job.snapshotId)
-        setPreview(await api.getSnapshotPreview(job.snapshotId));
+      if (job.snapshotId) {
+        const loadedPreview = await api.getSnapshotPreview(job.snapshotId);
+        setPreview(loadedPreview);
+        rememberDownloadedData(request, job);
+      }
     } catch (reason) {
       setError(
         reason instanceof Error ? reason.message : "The map import failed.",
@@ -243,19 +279,57 @@ export function App() {
             <p className="eyebrow">Choose a place</p>
             <h2>Where should we build?</h2>
             <form className="search-form" onSubmit={search}>
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="City, address, or intersection"
-                aria-label="Location search"
-              />
+              <div className="search-input-shell">
+                <input
+                  value={query}
+                  onChange={(event) => {
+                    setQuery(event.target.value);
+                    setResults([]);
+                  }}
+                  placeholder="City, address, or intersection"
+                  aria-label="Location search"
+                  autoComplete="off"
+                />
+                <button
+                  className="search-history-toggle"
+                  type="button"
+                  aria-label="Show recent searches"
+                  aria-expanded={recentSearchesOpen}
+                  aria-controls="recent-searches"
+                  title="Show recent searches"
+                  disabled={recentSearches.length === 0}
+                  onClick={() => setRecentSearchesOpen((open) => !open)}
+                >
+                  ▾
+                </button>
+                {recentSearchesOpen && (
+                  <ul
+                    className="search-history-menu"
+                    id="recent-searches"
+                    aria-label="Recent searches"
+                  >
+                    {recentSearches.map((result) => (
+                      <li
+                        key={`${result.displayName}:${result.longitude}:${result.latitude}`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => selectResult(result)}
+                        >
+                          {result.displayName}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
               <button disabled={searching || query.trim().length < 2}>
                 {searching ? "Searching…" : "Search"}
               </button>
             </form>
             <p className="provider-note">
-              Search is submitted explicitly to the configured geocoder;
-              autocomplete is not used.
+              Search is submitted explicitly to the configured geocoder; the
+              last 10 selected addresses stay in this browser.
             </p>
             {results.length > 0 && (
               <ul className="search-results">
@@ -366,6 +440,10 @@ export function App() {
                 </option>
               </select>
             </label>
+            <p className="provider-note">
+              Successful area downloads are cached and reused for identical
+              boundaries and data-source versions.
+            </p>
             <button
               className="primary-action"
               onClick={importArea}
@@ -389,7 +467,9 @@ export function App() {
                 <progress max="100" value={importJob.progress} />
                 {importJob.status === "complete" && (
                   <small>
-                    {importJob.featureCount} geographic features ready
+                    {importJob.stage.includes("cache")
+                      ? `${importJob.featureCount} geographic features reused from cache`
+                      : `${importJob.featureCount} geographic features ready`}
                   </small>
                 )}
               </div>

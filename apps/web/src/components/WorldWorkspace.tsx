@@ -11,6 +11,7 @@ import {
   estimateRoadWidthWithSource,
 } from "@osm3d/worldgen";
 import { api } from "../api.js";
+import { DriveMiniMap } from "./DriveMiniMap.js";
 import {
   WorldEngine,
   type DriveInputPreferences,
@@ -38,6 +39,7 @@ const emptyStats: EngineStats = {
   elevationProvider: "pending",
   elevationRange: 0,
   vehicleElevation: 0,
+  vehicleMapPose: { longitude: 0, latitude: 0, headingDegrees: 0 },
   buildHash: "pending",
   buildDurationMs: 0,
   diagnosticCount: 0,
@@ -459,53 +461,59 @@ export function WorldWorkspace({
       </details>
 
       {mode === "drive" ? (
-        <section className="drive-help glass-panel">
-          <strong>Drive</strong>
-          <span>
-            WASD / arrows · Space handbrake · R safe reset · Shift+R spawn
-          </span>
-          <div className="drive-actions">
-            <button onClick={() => engineRef.current?.resetVehicle()}>
-              Reset car
-            </button>
-            <button onClick={() => engineRef.current?.resetVehicle(true)}>
-              Return to spawn
-            </button>
-          </div>
-          <details className="control-settings">
-            <summary>Controls</summary>
-            <label>
-              <input
-                type="checkbox"
-                checked={inputPreferences.gamepadEnabled}
-                onChange={(event) =>
-                  setInputPreferences({
-                    ...inputPreferences,
-                    gamepadEnabled: event.target.checked,
-                  })
-                }
-              />
-              Standard gamepad enabled
-            </label>
-            <label>
-              Steering sensitivity
-              <input
-                type="range"
-                min="0.5"
-                max="1.5"
-                step="0.1"
-                value={inputPreferences.steeringSensitivity}
-                onChange={(event) =>
-                  setInputPreferences({
-                    ...inputPreferences,
-                    steeringSensitivity: Number(event.target.value),
-                  })
-                }
-              />
-            </label>
-            <small>Active input: {stats.inputSource}</small>
-          </details>
-        </section>
+        <>
+          <section className="drive-help glass-panel">
+            <strong>Drive</strong>
+            <span>
+              WASD / arrows · Space handbrake · R safe reset · Shift+R spawn
+            </span>
+            <div className="drive-actions">
+              <button onClick={() => engineRef.current?.resetVehicle()}>
+                Reset car
+              </button>
+              <button onClick={() => engineRef.current?.resetVehicle(true)}>
+                Return to spawn
+              </button>
+            </div>
+            <details className="control-settings">
+              <summary>Controls</summary>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={inputPreferences.gamepadEnabled}
+                  onChange={(event) =>
+                    setInputPreferences({
+                      ...inputPreferences,
+                      gamepadEnabled: event.target.checked,
+                    })
+                  }
+                />
+                Standard gamepad enabled
+              </label>
+              <label>
+                Steering sensitivity
+                <input
+                  type="range"
+                  min="0.5"
+                  max="1.5"
+                  step="0.1"
+                  value={inputPreferences.steeringSensitivity}
+                  onChange={(event) =>
+                    setInputPreferences({
+                      ...inputPreferences,
+                      steeringSensitivity: Number(event.target.value),
+                    })
+                  }
+                />
+              </label>
+              <small>Active input: {stats.inputSource}</small>
+            </details>
+          </section>
+          <DriveMiniMap
+            features={definition.features}
+            pose={stats.vehicleMapPose}
+          />
+        </>
       ) : (
         <aside className="inspector glass-panel">
           <p className="eyebrow">Inspector</p>
