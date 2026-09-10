@@ -1,11 +1,13 @@
-# OpenStreetMapTo3D documentation
+# StreetRove documentation
 
 Status: Active
 
-Last updated: 2026-08-31
+Last updated: 2026-09-10
+
+**Your neighborhood. Your world. Your drive.**
 
 This directory contains the product intent, implemented architecture, and
-future roadmap for OpenStreetMapTo3D. Start with the
+future roadmap for StreetRove. Start with the
 [implementation status](implementation-status.md) to distinguish the working
 MVP from later roadmap items.
 
@@ -32,6 +34,8 @@ MVP from later roadmap items.
   jobs, project records, source data, and override model.
 - [Docker development](docker-development.md) defines the intended local and
   production container workflows.
+- [OVHcloud pilot deployment](../deploy/README.md) covers VPS-2, the password
+  gate, the persistent import worker, backups and release verification.
 - [Testing strategy](testing-strategy.md) defines automated validation,
   deterministic fixtures, browser tests, and performance gates.
 - [Performance budget](performance-budget.md) records the reference machine,

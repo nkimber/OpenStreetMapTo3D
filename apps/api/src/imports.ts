@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
@@ -132,11 +132,11 @@ export async function executeImportJob(
       config.OSM_CACHE_DIRECTORY,
       `${osmContentHash}.json.gz`,
     );
-    await writeFile(cachePath, compressed, { flag: "wx" }).catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code !== "EEXIST") throw error;
-      },
-    );
+    // Publish complete gzip files atomically so a killed worker cannot leave a
+    // partial snapshot that its replacement mistakes for a reusable cache file.
+    const temporaryPath = `${cachePath}.${id}.tmp`;
+    await writeFile(temporaryPath, compressed);
+    await rename(temporaryPath, cachePath);
     await updateJob(pool, id, "running", 65, "persisting");
 
     const client = await pool.connect();

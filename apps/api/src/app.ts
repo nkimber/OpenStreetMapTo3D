@@ -79,7 +79,7 @@ export async function buildApp({
       });
     }
     const job = await createImportJob(pool, body);
-    if (job.status === "queued") {
+    if (job.status === "queued" && config.IMPORT_EXECUTION_MODE === "inline") {
       setImmediate(() => {
         void executeImportJob(pool, config, job.id, body);
       });
@@ -130,7 +130,7 @@ export async function buildApp({
     if (await emit()) return;
     const interval = setInterval(
       () => void emit().then((finished) => finished && clearInterval(interval)),
-      500,
+      2_000,
     );
     request.raw.on("close", () => clearInterval(interval));
   });

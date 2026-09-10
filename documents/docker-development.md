@@ -2,7 +2,7 @@
 
 Status: Active
 
-Last updated: 2026-08-31
+Last updated: 2026-09-02
 
 ## Goal
 
@@ -52,6 +52,10 @@ after the web service finishes its workspace-package build.
   hidden by a volume mounted over the workspace
 
 Neither volume belongs in Git.
+
+StreetRove retains the `openstreetmap-to-3d` Compose project ID so existing
+database and cache volumes are reused after the rebrand. Internal `@osm3d/*`
+package names and browser storage keys also remain stable for compatibility.
 
 ## Dockerfile strategy
 

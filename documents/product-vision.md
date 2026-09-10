@@ -2,11 +2,13 @@
 
 Status: Active
 
-Last updated: 2026-08-30
+Last updated: 2026-09-02
 
 ## Product statement
 
-OpenStreetMapTo3D turns an OpenStreetMap neighborhood extract into an editable,
+**StreetRove — Your neighborhood. Your world. Your drive.**
+
+StreetRove turns an OpenStreetMap neighborhood extract into an editable,
 interactive 3D world in which a user can place and drive a vehicle. The core
 experience should require no GIS or 3D-modeling knowledge.
 

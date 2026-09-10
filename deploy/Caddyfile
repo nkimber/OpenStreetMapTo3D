@@ -1,0 +1,23 @@
+{
+	email {$TLS_EMAIL}
+}
+
+{$STREETROVE_HOST} {
+	encode zstd gzip
+
+	# Pilot gate: all authenticated visitors share the current single workspace.
+	basic_auth bcrypt {
+		{$PILOT_USER} {$PILOT_PASSWORD_HASH}
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+
+	reverse_proxy api:3000 {
+		header_up -Authorization
+	}
+}

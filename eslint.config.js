@@ -25,4 +25,14 @@ export default defineConfig(
       ],
     },
   },
+  {
+    files: ["deploy/*.mjs"],
+    languageOptions: {
+      globals: {
+        fetch: "readonly",
+        AbortSignal: "readonly",
+        console: "readonly",
+      },
+    },
+  },
 );

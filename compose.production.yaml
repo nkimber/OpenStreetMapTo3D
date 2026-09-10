@@ -1,0 +1,121 @@
+name: streetrove
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  DATABASE_URL: postgresql://streetrove:${POSTGRES_PASSWORD:?Run deploy/initialize.sh first}@db:5432/streetrove
+  API_PORT: "3000"
+  PUBLIC_APP_URL: https://${STREETROVE_HOST:?Set the public hostname}
+  IMPORT_EXECUTION_MODE: worker
+  OSM_CACHE_DIRECTORY: /data/osm
+  OSM_USER_AGENT: ${OSM_USER_AGENT:?Set an application contact in deploy/private/production.env}
+  NOMINATIM_BASE_URL: ${NOMINATIM_BASE_URL:-https://nominatim.openstreetmap.org}
+  OVERPASS_BASE_URL: ${OVERPASS_BASE_URL:-https://overpass-api.de/api/interpreter}
+  USGS_ELEVATION_BASE_URL: ${USGS_ELEVATION_BASE_URL:-https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples}
+  MAX_IMPORT_AREA_SQUARE_KM: "4"
+  MAX_IMPORT_RESPONSE_BYTES: "25000000"
+  LOG_LEVEL: info
+
+services:
+  db:
+    image: postgis/postgis:17-3.5
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: streetrove
+      POSTGRES_USER: streetrove
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run deploy/initialize.sh first}
+    command: [postgres, -c, max_connections=50, -c, shared_buffers=256MB]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U streetrove -d streetrove]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 2560m
+    cpus: 1.5
+    logging: *logging
+
+  api:
+    image: streetrove:${STREETROVE_RELEASE:-local}
+    build:
+      context: .
+      target: production
+    restart: unless-stopped
+    init: true
+    environment: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:3000/api/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1536m
+    cpus: 1.0
+    logging: *logging
+
+  worker:
+    image: streetrove:${STREETROVE_RELEASE:-local}
+    command: [node, dist/worker.js]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    environment: *app-environment
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - osm_cache:/data/osm
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2048m
+    cpus: 1.0
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      STREETROVE_HOST: ${STREETROVE_HOST:?Set the public hostname}
+      TLS_EMAIL: ${TLS_EMAIL:?Set the certificate contact}
+      PILOT_USER: ${PILOT_USER:?Set the pilot username}
+      PILOT_PASSWORD_HASH: ${PILOT_PASSWORD_HASH:?Generate a password hash}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    mem_limit: 256m
+    cpus: 0.5
+    logging: *logging
+
+volumes:
+  postgres_data:
+  osm_cache:
+  caddy_data:
+  caddy_config:

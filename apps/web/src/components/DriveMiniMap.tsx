@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
-import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
+import type {
+  GeoJSONSource,
+  Map as MapLibreMap,
+  StyleSpecification,
+} from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import type { FeatureCollection, Geometry } from "geojson";
 import type { NormalizedFeature } from "@osm3d/contracts";
@@ -28,43 +32,61 @@ function featureCollection(
   };
 }
 
-function addWorldLayers(map: MapLibreMap, features: NormalizedFeature[]): void {
-  map.addSource(sourceId, {
-    type: "geojson",
-    data: featureCollection(features),
-  });
-  map.addLayer({
-    id: "drive-minimap-land",
-    type: "fill",
-    source: sourceId,
-    filter: ["in", ["get", "kind"], ["literal", ["land", "water"]]],
-    paint: {
-      "fill-color": ["match", ["get", "kind"], "water", "#4f9ec4", "#72a563"],
-      "fill-opacity": 0.48,
+function localMapStyle(features: NormalizedFeature[]): StyleSpecification {
+  return {
+    version: 8,
+    sources: {
+      [sourceId]: {
+        type: "geojson",
+        data: featureCollection(features),
+      },
     },
-  });
-  map.addLayer({
-    id: "drive-minimap-buildings",
-    type: "fill",
-    source: sourceId,
-    filter: ["==", ["get", "kind"], "building"],
-    paint: {
-      "fill-color": "#bd7a4b",
-      "fill-opacity": 0.72,
-      "fill-outline-color": "#6d4931",
-    },
-  });
-  map.addLayer({
-    id: "drive-minimap-roads",
-    type: "line",
-    source: sourceId,
-    filter: ["==", ["get", "kind"], "road"],
-    paint: {
-      "line-color": "#f7f3e9",
-      "line-width": 4,
-      "line-opacity": 0.95,
-    },
-  });
+    layers: [
+      {
+        id: "drive-minimap-background",
+        type: "background",
+        paint: { "background-color": "#dce6dc" },
+      },
+      {
+        id: "drive-minimap-land",
+        type: "fill",
+        source: sourceId,
+        filter: ["in", ["get", "kind"], ["literal", ["land", "water"]]],
+        paint: {
+          "fill-color": [
+            "match",
+            ["get", "kind"],
+            "water",
+            "#4f9ec4",
+            "#72a563",
+          ],
+          "fill-opacity": 0.48,
+        },
+      },
+      {
+        id: "drive-minimap-buildings",
+        type: "fill",
+        source: sourceId,
+        filter: ["==", ["get", "kind"], "building"],
+        paint: {
+          "fill-color": "#bd7a4b",
+          "fill-opacity": 0.72,
+          "fill-outline-color": "#6d4931",
+        },
+      },
+      {
+        id: "drive-minimap-roads",
+        type: "line",
+        source: sourceId,
+        filter: ["==", ["get", "kind"], "road"],
+        paint: {
+          "line-color": "#f7f3e9",
+          "line-width": 4,
+          "line-opacity": 0.95,
+        },
+      },
+    ],
+  };
 }
 
 export function DriveMiniMap({ features, pose }: DriveMiniMapProps) {
@@ -76,20 +98,12 @@ export function DriveMiniMap({ features, pose }: DriveMiniMapProps) {
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
-    const styleUrl = import.meta.env.VITE_MAP_STYLE_URL as string | undefined;
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: styleUrl || {
-        version: 8,
-        sources: {},
-        layers: [
-          {
-            id: "background",
-            type: "background",
-            paint: { "background-color": "#dce6dc" },
-          },
-        ],
-      },
+      // The drive overlay deliberately uses the already-downloaded world data
+      // instead of a remote style. It must remain available during offline and
+      // cached-data testing, even when the external preview tiles are blocked.
+      style: localMapStyle(featuresRef.current),
       center: [pose.longitude, pose.latitude],
       bearing: pose.headingDegrees,
       zoom: 16.5,
@@ -97,7 +111,11 @@ export function DriveMiniMap({ features, pose }: DriveMiniMapProps) {
       interactive: false,
       attributionControl: false,
     });
-    map.on("load", () => addWorldLayers(map, featuresRef.current));
+    map.on("load", () => {
+      const source = map.getSource(sourceId) as GeoJSONSource | undefined;
+      source?.setData(featureCollection(featuresRef.current));
+      map.resize();
+    });
     mapRef.current = map;
     return () => {
       map.remove();
@@ -134,16 +152,12 @@ export function DriveMiniMap({ features, pose }: DriveMiniMapProps) {
       <div className="drive-minimap-map" ref={containerRef} />
       <span className="drive-minimap-label">Navigation</span>
       <span className="drive-minimap-credit">
-        <a href="https://openfreemap.org" target="_blank" rel="noreferrer">
-          OpenFreeMap
-        </a>{" "}
-        ·{" "}
         <a
           href="https://www.openstreetmap.org/copyright"
           target="_blank"
           rel="noreferrer"
         >
-          © OSM
+          © OpenStreetMap
         </a>
       </span>
       <div className="drive-minimap-car" aria-hidden="true">

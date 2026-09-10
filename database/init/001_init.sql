@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   completed_at timestamptz
 );
 
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS jobs_queued_import_idx
+  ON jobs (created_at, id) WHERE job_type = 'osm-import' AND status = 'queued';
+
 CREATE TABLE IF NOT EXISTS source_snapshots (
   id uuid PRIMARY KEY,
   provider text NOT NULL,

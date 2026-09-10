@@ -133,7 +133,7 @@ export function createSampleOverpass(
 
   return {
     version: 0.6,
-    generator: "OpenStreetMapTo3D sample fixture",
+    generator: "StreetRove sample fixture",
     elements,
   };
 }

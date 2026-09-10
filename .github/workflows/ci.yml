@@ -27,7 +27,7 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: docker compose config --quiet
-      - run: docker build --target production --tag openstreetmap-to-3d:ci .
+      - run: docker build --target production --tag streetrove:ci .
       - run: docker compose up --build --detach --wait
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e

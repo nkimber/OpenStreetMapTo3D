@@ -2,11 +2,11 @@
 
 Status: Active
 
-Last updated: 2026-08-31
+Last updated: 2026-09-02
 
 ## Architecture summary
 
-OpenStreetMapTo3D is a TypeScript modular monolith delivered through Docker
+StreetRove is a TypeScript modular monolith delivered through Docker
 Compose. The browser performs real-time rendering and vehicle physics while a
 module Web Worker performs deterministic geometry planning and chunk
 assignment. The server owns external data access, normalization, caching,

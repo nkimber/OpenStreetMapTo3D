@@ -9,6 +9,7 @@ const ConfigSchema = z.object({
     .min(1)
     .default("postgresql://osm3d:osm3d-local@localhost:5432/osm3d"),
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+  IMPORT_EXECUTION_MODE: z.enum(["inline", "worker"]).default("inline"),
   PUBLIC_APP_URL: z.url().default("http://localhost:5173"),
   NOMINATIM_BASE_URL: z.url().default("https://nominatim.openstreetmap.org"),
   OVERPASS_BASE_URL: z.url().default("https://overpass-api.de/api/interpreter"),
@@ -34,10 +35,7 @@ const ConfigSchema = z.object({
     .min(25)
     .max(950)
     .default(900),
-  OSM_USER_AGENT: z
-    .string()
-    .min(8)
-    .default("OpenStreetMapTo3D/0.1 local-development"),
+  OSM_USER_AGENT: z.string().min(8).default("StreetRove/0.1 local-development"),
   OSM_CACHE_DIRECTORY: z.string().min(1).default(".data/osm"),
   MAX_IMPORT_AREA_SQUARE_KM: z.coerce.number().positive().default(4),
   MAX_IMPORT_RESPONSE_BYTES: z.coerce

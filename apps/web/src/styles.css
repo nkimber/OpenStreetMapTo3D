@@ -68,21 +68,28 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 15px;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
 .brand-lockup h1 {
   margin: 2px 0 0;
-  font-size: 24px;
+  font-size: 32px;
   letter-spacing: -0.04em;
   color: var(--forest-deep);
 }
 .brand-lockup h1 span {
   color: var(--orange);
 }
+.brand-tagline {
+  margin: 0 0 18px;
+  color: #4c6958;
+  font-size: 13px;
+  line-height: 1.5;
+}
 .brand-mark {
   position: relative;
   width: 48px;
   height: 48px;
+  flex-shrink: 0;
   overflow: hidden;
   border-radius: 15px;
   background: var(--forest);
@@ -953,13 +960,14 @@ button:disabled {
 }
 .drive-minimap {
   position: absolute;
-  z-index: 4;
+  z-index: 6;
   right: 18px;
   bottom: 58px;
   width: min(260px, calc(100vw - 36px));
   height: 190px;
   overflow: hidden;
   border-radius: 16px;
+  isolation: isolate;
   transition:
     width 180ms ease,
     height 180ms ease;

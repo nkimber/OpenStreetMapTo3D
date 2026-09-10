@@ -1,6 +1,8 @@
-# OpenStreetMapTo3D
+# StreetRove
 
-OpenStreetMapTo3D is an open-source application for turning OpenStreetMap
+**Your neighborhood. Your world. Your drive.**
+
+StreetRove is an open-source application for turning OpenStreetMap
 neighborhood data into a saved, editable 3D world that can be explored by car.
 
 ## Run it
@@ -67,6 +69,9 @@ corepack pnpm test:e2e
 The end-to-end test expects the Docker Compose stack to be running.
 
 ## Documentation
+
+For the password-protected OVHcloud pilot, see the
+[VPS deployment guide](deploy/README.md).
 
 See the [project documentation](documents/README.md) for the product scope,
 user workflow, technical architecture, data pipeline, development environment,

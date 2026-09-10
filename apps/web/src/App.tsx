@@ -174,7 +174,7 @@ export function App() {
       let job = await api.createImport(request);
       setImportJob(job);
       while (!["complete", "failed", "cancelled"].includes(job.status)) {
-        await sleep(450);
+        await sleep(2_000);
         job = await api.getImport(job.id);
         setImportJob(job);
       }
@@ -259,18 +259,21 @@ export function App() {
           <div>
             <p className="eyebrow">Open geospatial playground</p>
             <h1>
-              OpenStreetMap<span>To3D</span>
+              Street<span>Rove</span>
             </h1>
           </div>
         </div>
+        <p className="brand-tagline">
+          Your neighborhood. Your world. Your drive.
+        </p>
 
         <div className={`service-status ${ready === false ? "offline" : ""}`}>
           <span />
           {ready === undefined
-            ? "Checking local services…"
+            ? "Connecting to StreetRove…"
             : ready
-              ? "Docker services ready"
-              : "Local API is unavailable"}
+              ? "StreetRove is ready"
+              : "StreetRove is currently unavailable"}
         </div>
 
         <section className="workflow-section">
@@ -378,7 +381,7 @@ export function App() {
               onClick={() => {
                 setCenter(sampleCenter);
                 setProvider("fixture");
-                setWorldName("Open Data sample neighborhood");
+                setWorldName("StreetRove sample neighborhood");
                 setImportJob(undefined);
                 setPreview(undefined);
                 setCoordinateLatitude(String(sampleCenter.latitude));

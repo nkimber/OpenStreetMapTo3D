@@ -1,3 +1,4 @@
+# Keep this project ID stable to reuse existing database and cache volumes.
 name: openstreetmap-to-3d
 
 services:
@@ -36,7 +37,7 @@ services:
       ELEVATION_SAMPLE_SPACING_METERS: ${ELEVATION_SAMPLE_SPACING_METERS:-10}
       ELEVATION_MAX_GRID_DIMENSION: ${ELEVATION_MAX_GRID_DIMENSION:-129}
       ELEVATION_SAMPLE_BATCH_SIZE: ${ELEVATION_SAMPLE_BATCH_SIZE:-900}
-      OSM_USER_AGENT: ${OSM_USER_AGENT:-OpenStreetMapTo3D/0.1 local-development}
+      OSM_USER_AGENT: ${OSM_USER_AGENT:-StreetRove/0.1 local-development}
       OSM_CACHE_DIRECTORY: /data/osm
       MAX_IMPORT_AREA_SQUARE_KM: ${MAX_IMPORT_AREA_SQUARE_KM:-4}
       MAX_IMPORT_RESPONSE_BYTES: ${MAX_IMPORT_RESPONSE_BYTES:-25000000}

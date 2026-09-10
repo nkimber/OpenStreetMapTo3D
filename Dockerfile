@@ -28,7 +28,10 @@ RUN pnpm --filter @osm3d/api deploy --prod --legacy /opt/osm3d-api
 FROM node:24-bookworm-slim AS production
 ENV NODE_ENV=production
 WORKDIR /app/api
-RUN useradd --create-home --uid 10001 appuser
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /data/osm \
+    && chown appuser:appuser /data/osm
+ENV OSM_CACHE_DIRECTORY=/data/osm
 COPY --from=build --chown=appuser:appuser /opt/osm3d-api ./
 COPY --from=build --chown=appuser:appuser /workspace/apps/web/dist ./public
 COPY --from=build --chown=appuser:appuser /workspace/database ./database

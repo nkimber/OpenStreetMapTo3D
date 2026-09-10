@@ -48,6 +48,12 @@ Implemented capabilities:
   source attribution, linting, unit/fixture/physics tests, browser coverage, and
   CI
 - Development and production Docker image targets
+- StreetRove branding while retaining existing package identifiers, storage
+  keys and development database volumes
+- Offline drive minimap built from imported features, with collapse/expand
+  controls and a vehicle marker
+- Prepared password-protected pilot deployment with a separate import worker,
+  restart recovery, atomic cache writes and backup/packaging scripts
 
 ## Verification snapshot
 
@@ -73,6 +79,22 @@ resets, and persisted state after reopen.
 It does not contact geocoding or Overpass. Base-map tiles are an optional
 external visual layer and are not an input to world generation.
 
+### Repository checkpoint: 2026-09-10
+
+Validated the complete StreetRove working tree before check-in:
+
+- Formatting, full-repository lint, type checking, and API/web production builds
+- 68 unit/integration tests across 19 files
+- All three Chromium workflows, run serially against the local Docker stack:
+  minimap controls, sample editing/driving/reopening, and terrain edit/undo
+- Production Docker image build and both Compose configuration checks
+- Deployment shell syntax and source-archive exclusions for secrets/local data
+
+This checkpoint does not deploy to Azure or another host. The separate production
+worker's crash recovery, VPS authentication/TLS, and backup restoration still
+require deployment acceptance checks; unit tests and image builds do not prove
+those operational scenarios.
+
 ## Current limitations
 
 - Live elevation currently uses USGS 3DEP. Areas without coverage receive a
@@ -88,7 +110,7 @@ external visual layer and are not an input to world generation.
 - Progress stages are coarse and cancellation restarts a build rather than
   resuming it.
 - The standard gamepad layout is fixed; control remapping, touch input, extra
-  driving cameras, minimap, traffic, and pedestrians are not implemented.
+  driving cameras, traffic, and pedestrians are not implemented.
 - Public provider availability and OSM feature coverage vary; the fixture is
   the reproducible fallback.
 
