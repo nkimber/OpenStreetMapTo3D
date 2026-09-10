@@ -1,15 +1,22 @@
-import { expect, test } from "@playwright/test";
+import { expect as baseExpect, test } from "@playwright/test";
+
+// Software-rendered CI browsers need time for terrain Worker rebuilds.
+const expect = baseExpect.configure({ timeout: 30_000 });
 
 test("imports, incrementally edits, drives, and reopens the sample world", async ({
   page,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(180_000);
   await page.goto("/");
-  await expect(page.getByText("Docker services ready")).toBeVisible();
+  await expect
+    .poll(async () => (await page.request.get("/api/ready")).status())
+    .toBe(200);
 
   await page.getByRole("button", { name: /Use the offline sample/ }).click();
   await page.getByRole("button", { name: /Import neighborhood data/ }).click();
-  await expect(page.getByText("23 geographic features ready")).toBeVisible();
+  await expect(
+    page.getByText(/23 geographic features (ready|reused)/),
+  ).toBeVisible();
   await expect(page.getByLabel("Imported source coverage")).toContainText(
     "16buildings",
   );

@@ -51,6 +51,26 @@ A building height edit reported one rebuilt feature chunk. This is an
 observational developer baseline; CI uses SwiftShader and is a functional rather
 than GPU-performance measurement.
 
+## Road-boundary terrain increment (2026-09-10)
+
+Generator 0.5.0 retains the current 4 m terrain grid and clips it to pavement.
+The sample produces approximately 306,000 terrain triangles across 36 chunks;
+28 chunks use clipped meshes and the remainder retain heightfields. Welding
+vertices and resolving crossings bring serialized world-plan size to about
+7.6 MB, versus 19.6 MB for the initial unwelded approach.
+Terrain content hashes are computed in the Worker to avoid repeating large
+buffer hashing on the main thread during edits.
+The compatible 64-bit hash now uses two integer words instead of per-character
+BigInt allocation. A local Node run of the final sample measured 1.48 s for
+initial generation, 1.83 s for widening and 1.93 s for hiding a road; these are
+single-run observations, not percentile or browser-performance acceptance.
+
+The historical 174 ms result above predates these changes and the 4 m grid.
+The 250 ms fixture generation target is currently unmet; the table remains an
+acceptance target rather than a claim of passing performance. A new GPU
+percentile/memory baseline for the default and maximum areas remains outstanding.
+See [ADR-0006](decisions/0006-road-boundary-terrain-and-collision.md).
+
 ## Measurement surfaces
 
 The **Build & performance** panel reports frame rate, road and terrain triangles,

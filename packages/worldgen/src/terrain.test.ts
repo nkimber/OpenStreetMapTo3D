@@ -173,9 +173,10 @@ describe("elevation-aware world generation", () => {
     expect(Number.isFinite(spawn.pitch)).toBe(true);
     for (const point of road?.points.filter((_, index) => index % 8 === 0) ??
       []) {
-      expect(
-        point.y - sampleTerrainPlan(plan.terrain, point.x, point.z),
-      ).toBeGreaterThan(0.015);
+      expect(sampleTerrainPlan(plan.terrain, point.x, point.z)).toBeCloseTo(
+        point.y,
+        3,
+      );
     }
   });
 

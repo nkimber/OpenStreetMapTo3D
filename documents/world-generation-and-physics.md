@@ -2,7 +2,7 @@
 
 Status: Active
 
-Last updated: 2026-08-31
+Last updated: 2026-09-10
 
 ## Coordinate model
 
@@ -72,13 +72,12 @@ Implemented generation stages:
 2. Densify centerlines to at most 4 m and bilinearly sample the immutable DEM.
 3. Smooth longitudinal grades while keeping each cross-section level.
 4. Apply bridge, tunnel, and OSM-layer separation with endpoint ramps.
-5. Grade the shared terrain heightfield beneath ordinary roads and junctions.
-   High terrain is cut with a cell-safety margin; low terrain is filled along
-   the shoulder profile. Both return to the original DEM outside the corridor.
-6. Create continuous two-sided strips with stable miter joins and blended
-   ground-road shoulders.
-7. Group equal graph nodes per vertical layer and create intersection/end-cap
-   surfaces.
+5. Resolve shared junction heights, flatten their footprints and ease adjoining
+   grades. Build continuous road strips and intersection/end-cap surfaces.
+6. Grade the surrounding terrain, then clip its triangles to the actual road
+   footprint, including mitered corners and junctions.
+7. Stitch terrain boundary vertices to pavement height. The surrounding terrain
+   mesh forms the driveable shoulders and embankments.
 8. Diagnose grades above 20% and retain 3D centerlines for exact spawn snapping.
 9. Use the road and junction triangle strips as fixed Rapier colliders.
 
@@ -121,15 +120,18 @@ remains in `TerrainPlan` for inspection.
 Terrain chunks align to the 256 m world lattice and include a 40 m safety
 margin. The default 64 × 64 cells create a 4 m grid. Values are serialized in
 Rapier-compatible x-major order; adjacent chunks sample the same coordinates at
-their borders. Three.js triangulates these heights and Rapier consumes the same
-array as a heightfield collider. Tests ray-cast the collider and compare it with
-the visual plan sampler. Ground-road corridors and junction discs are graded in
-this shared array, so hidden terrain cannot remain as a competing collider below
-the road surface.
+their borders. Chunks intersecting pavement carry a clipped triangle mesh used
+by both Three.js and Rapier; unaffected chunks keep the heightfield. Height
+queries interpolate actual triangle planes, including the same grid diagonal.
+Shared edge profiles keep clipping-created vertices continuous across chunks.
 
-Land-use overlays are resampled onto the terrain. Buildings remain vertical and
-start at the median height of their outer footprint. Water currently follows
-terrain like other overlays; a level water-plane model is future work.
+Land and water classifications are vertex colors on that terrain, with polygon
+holes respected, so decorative triangles cannot cover a road cutting. Buildings
+remain vertical and start at the median finished-terrain footprint height.
+A level water-plane model remains future work.
+
+See [ADR-0006](decisions/0006-road-boundary-terrain-and-collision.md) for the
+road-boundary algorithm, regression coverage and performance trade-offs.
 
 ## Web Worker boundary
 
@@ -148,13 +150,16 @@ Worker input:
 Worker output is a structured-cloneable `WorldPlan` containing road surface
 positions and indices, junctions, building/land plans, authoritative chunks,
 feature-to-chunk dependencies, the deterministic build hash, diagnostics, and
-statistics. It also contains heightfield chunks, elevation metadata, 3D road
-profiles, shoulder surfaces, and building base heights. The main thread converts
+statistics. It also contains heightfield/clipped-mesh chunks and content hashes,
+elevation metadata, 3D road profiles, and building base heights. The main thread converts
 that one plan into both Three.js buffers and Rapier objects. A future
 binary/transferable representation can reduce structured-copy cost for larger
 areas without changing the versioned message contract.
 
 The main thread owns Three.js objects, input handling, and the render loop.
+Terrain replacements are staged and installed with feature updates between
+simulation frames. Changed geometry also invalidates connected roads and moved
+building bases; unchanged terrain meshes and colliders retain their identities.
 
 ## Physics loop
 

@@ -12,11 +12,15 @@ import { wgs84ToLocal } from "@osm3d/geo";
 import {
   buildTerrainPlan,
   createElevationSampler,
-  ROAD_TERRAIN_BLEND_WIDTH_METERS,
-  roadTerrainCellSafetyMargin,
+  sampleTerrainPlan,
   type ElevationSampler,
   type TerrainPlan,
 } from "./terrain.js";
+import { combineSurfaces } from "./surface.js";
+import { deterministicHash } from "./hash.js";
+import { insertGroundCrossings } from "./crossings.js";
+export { deterministicHash } from "./hash.js";
+export { meshTriangles, triangleHeight, SurfaceIndex } from "./surface.js";
 
 export {
   buildTerrainPlan,
@@ -34,7 +38,7 @@ export type {
   TerrainRoadProfile,
 } from "./terrain.js";
 
-export const WORLD_GENERATOR_VERSION = "0.4.0";
+export const WORLD_GENERATOR_VERSION = "0.5.0";
 export const DEFAULT_CHUNK_SIZE_METERS = 256;
 export const DEFAULT_TERRAIN_CELLS_PER_CHUNK = 64;
 
@@ -334,68 +338,6 @@ export function buildRoadSurface(
   return { positions, indices };
 }
 
-function buildRoadShoulderSurface(
-  points: LocalPoint3[],
-  width: number,
-  sampleTerrain: (x: number, z: number) => number,
-  transitionWidth: number,
-): SurfaceMeshPlan {
-  if (points.length < 2) return { positions: [], indices: [] };
-  const positions: number[] = [];
-  const indices: number[] = [];
-  const inner = width / 2;
-  const outer = inner + transitionWidth;
-  for (let index = 0; index < points.length; index += 1) {
-    const point = points[index];
-    if (!point) continue;
-    const previous = points[Math.max(0, index - 1)] ?? point;
-    const next = points[Math.min(points.length - 1, index + 1)] ?? point;
-    const direction = normalizedDirection(previous, next);
-    const normal = { x: -direction.z, z: direction.x };
-    const leftOuter = {
-      x: point.x + normal.x * outer,
-      z: point.z + normal.z * outer,
-    };
-    const rightOuter = {
-      x: point.x - normal.x * outer,
-      z: point.z - normal.z * outer,
-    };
-    positions.push(
-      leftOuter.x,
-      sampleTerrain(leftOuter.x, leftOuter.z) + 0.01,
-      leftOuter.z,
-      point.x + normal.x * inner,
-      point.y - 0.015,
-      point.z + normal.z * inner,
-      point.x - normal.x * inner,
-      point.y - 0.015,
-      point.z - normal.z * inner,
-      rightOuter.x,
-      sampleTerrain(rightOuter.x, rightOuter.z) + 0.01,
-      rightOuter.z,
-    );
-  }
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const current = index * 4;
-    const next = current + 4;
-    indices.push(
-      current,
-      next,
-      current + 1,
-      next,
-      next + 1,
-      current + 1,
-      current + 2,
-      next + 2,
-      current + 3,
-      next + 2,
-      next + 3,
-      current + 3,
-    );
-  }
-  return { positions, indices };
-}
-
 function buildDiscSurface(
   center: LocalPoint3,
   radius: number,
@@ -586,7 +528,7 @@ function createJunctions(roads: RoadPlan[]): RoadJunctionPlan[] {
         sourceIds,
         center: {
           ...node.center,
-          y: node.elevationSum / node.occurrenceCount + 0.002,
+          y: node.elevationSum / node.occurrenceCount,
         },
         radius: node.radius,
         kind,
@@ -594,7 +536,7 @@ function createJunctions(roads: RoadPlan[]): RoadJunctionPlan[] {
         mesh: buildDiscSurface(
           {
             ...node.center,
-            y: node.elevationSum / node.occurrenceCount + 0.002,
+            y: node.elevationSum / node.occurrenceCount,
           },
           node.radius,
         ),
@@ -602,27 +544,84 @@ function createJunctions(roads: RoadPlan[]): RoadJunctionPlan[] {
     });
 }
 
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableValue);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, stableValue(item)]),
-    );
+/** Pin shared junctions, flatten their footprint and ease grades along road distance. */
+function reconcileRoadJunctions(roads: RoadPlan[]): void {
+  const junctions = createJunctions(roads);
+  const byKey = new Map(
+    junctions.map((junction, index) => [
+      coordinateKey(junction.center, junction.layer),
+      index,
+    ]),
+  );
+  const parents = junctions.map((_, index) => index);
+  const root = (index: number): number => {
+    while (parents[index] !== index) index = parents[index]!;
+    return index;
+  };
+  const profiles = roads.map((road) => {
+    const distances = [0];
+    for (let i = 1; i < road.points.length; i++)
+      distances.push(
+        distances[i - 1]! +
+          Math.hypot(
+            road.points[i]!.x - road.points[i - 1]!.x,
+            road.points[i]!.z - road.points[i - 1]!.z,
+          ),
+      );
+    const anchors = road.points.flatMap((point, index) => {
+      const junctionIndex = byKey.get(coordinateKey(point, road.layer));
+      return junctionIndex === undefined
+        ? []
+        : [
+            {
+              junctionIndex,
+              distance: distances[index]!,
+              radius: junctions[junctionIndex]!.radius + 4,
+            },
+          ];
+    });
+    for (let i = 1; i < anchors.length; i++) {
+      const a = anchors[i - 1]!,
+        b = anchors[i]!;
+      if (b.distance - a.distance <= a.radius + b.radius)
+        parents[root(b.junctionIndex)] = root(a.junctionIndex);
+    }
+    return { road, distances, anchors };
+  });
+  const groups = new Map<number, number[]>();
+  junctions.forEach((junction, index) => {
+    const id = root(index),
+      values = groups.get(id) ?? [];
+    values.push(junction.center.y);
+    groups.set(id, values);
+  });
+  const heights = new Map(
+    [...groups].map(([id, values]) => [
+      id,
+      values.reduce((a, b) => a + b, 0) / values.length,
+    ]),
+  );
+  for (const { road, distances, anchors } of profiles) {
+    road.points = road.points.map((point, index) => {
+      let total = 0,
+        weighted = 0;
+      for (const anchor of anchors) {
+        const distance = Math.abs(distances[index]! - anchor.distance);
+        const height = heights.get(root(anchor.junctionIndex))!;
+        if (distance <= anchor.radius) return { ...point, y: height };
+        const t = Math.max(0, 1 - (distance - anchor.radius) / 16);
+        const weight = t * t * (3 - 2 * t);
+        total += weight;
+        weighted += height * weight;
+      }
+      return total > 0
+        ? {
+            ...point,
+            y: point.y + (weighted / total - point.y) * Math.min(1, total),
+          }
+        : point;
+    });
   }
-  return value;
-}
-
-export function deterministicHash(value: unknown): string {
-  const input = JSON.stringify(stableValue(value));
-  let hash = 14_695_981_039_346_656_037n;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= BigInt(input.charCodeAt(index));
-    hash = BigInt.asUintN(64, hash * 1_099_511_628_211n);
-  }
-  return hash.toString(16).padStart(16, "0");
 }
 
 function overrideIdentity(overrides: WorldOverride[]): unknown[] {
@@ -758,6 +757,28 @@ export function affectedChunkIds(
     for (const id of previous.featureChunks[targetId] ?? []) result.add(id);
     for (const id of next.featureChunks[targetId] ?? []) result.add(id);
   }
+  // Road grading also moves connected junctions and nearby building bases.
+  // Compare actual generated content so those dependent owners rebuild too.
+  const signatures = (plan: WorldPlan) =>
+    new Map(
+      plan.chunks.map((chunk) => [
+        chunk.id,
+        deterministicHash({
+          roads: chunk.roadIndexes.map((index) => plan.roads[index]),
+          junctions: chunk.junctionIndexes.map(
+            (index) => plan.junctions[index],
+          ),
+          buildings: chunk.buildingIndexes.map(
+            (index) => plan.buildings[index],
+          ),
+          land: chunk.landIndexes.map((index) => plan.land[index]),
+        }),
+      ]),
+    );
+  const before = signatures(previous),
+    after = signatures(next);
+  for (const id of new Set([...before.keys(), ...after.keys()]))
+    if (before.get(id) !== after.get(id)) result.add(id);
   return [...result].sort();
 }
 
@@ -845,9 +866,6 @@ export function buildWorldPlan(
   const chunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE_METERS;
   const terrainCellsPerChunk =
     options.terrainCellsPerChunk ?? DEFAULT_TERRAIN_CELLS_PER_CHUNK;
-  const roadShoulderWidth =
-    ROAD_TERRAIN_BLEND_WIDTH_METERS +
-    roadTerrainCellSafetyMargin(chunkSize / terrainCellsPerChunk);
   const elevationSampler = options.elevation
     ? createElevationSampler(options.elevation, anchor)
     : undefined;
@@ -907,15 +925,6 @@ export function buildWorldPlan(
         bridge,
         tunnel,
       );
-      const maximumGrade = maximumRoadGrade(points);
-      if (maximumGrade > 20) {
-        diagnostics.push({
-          code: "road.suspicious-grade",
-          severity: "warning",
-          message: `Road grade reaches ${maximumGrade.toFixed(1)}%; inspect DEM coverage or vertical tags.`,
-          sourceId: feature.sourceId,
-        });
-      }
       if (bridge || tunnel || layer !== 0) {
         diagnostics.push({
           code: "road.vertical-separation",
@@ -932,16 +941,6 @@ export function buildWorldPlan(
         widthSource: width.source,
         points,
         mesh: buildRoadSurface(points, width.width),
-        ...(!bridge && !tunnel && layer === 0 && elevationSampler
-          ? {
-              shoulderMesh: buildRoadShoulderSurface(
-                points,
-                width.width,
-                elevationSampler.atLocal,
-                roadShoulderWidth,
-              ),
-            }
-          : {}),
         ...(feature.tags.surface ? { surface: feature.tags.surface } : {}),
         layer,
         bridge,
@@ -994,6 +993,19 @@ export function buildWorldPlan(
     }
   }
 
+  insertGroundCrossings(roads);
+  reconcileRoadJunctions(roads);
+  for (const road of roads) {
+    road.mesh = buildRoadSurface(road.points, road.width);
+    const maximumGrade = maximumRoadGrade(road.points);
+    if (maximumGrade > 20)
+      diagnostics.push({
+        code: "road.suspicious-grade",
+        severity: "warning",
+        message: `Finished road grade reaches ${maximumGrade.toFixed(1)}%; inspect DEM coverage, junction approaches or vertical tags.`,
+        sourceId: road.sourceId,
+      });
+  }
   const junctions = createJunctions(roads);
   const groundRoads = roads.filter(
     (road) => !road.bridge && !road.tunnel && road.layer === 0,
@@ -1006,6 +1018,16 @@ export function buildWorldPlan(
           elevation: options.elevation,
           chunkSize,
           cellsPerChunk: terrainCellsPerChunk,
+          roadSurface: combineSurfaces([
+            ...roads.filter((road) => !road.bridge).map((road) => road.mesh),
+            ...junctions
+              .filter((junction) =>
+                junction.sourceIds.every(
+                  (id) => !roads.find((road) => road.sourceId === id)?.bridge,
+                ),
+              )
+              .map((junction) => junction.mesh),
+          ]),
           roads: roads
             .filter((road) => !road.bridge && (road.tunnel || road.layer === 0))
             .map((road) => ({
@@ -1019,6 +1041,14 @@ export function buildWorldPlan(
           })),
         })
       : undefined;
+  if (terrain) {
+    for (const building of buildings) {
+      const heights = (building.rings[0] ?? [])
+        .map((point) => sampleTerrainPlan(terrain, point.x, point.z))
+        .sort((a, b) => a - b);
+      building.baseHeight = heights[Math.floor(heights.length / 2)] ?? 0;
+    }
+  }
   const chunkResult = buildChunks(roads, buildings, land, junctions, chunkSize);
   const buildHash = deterministicHash({
     sourceSnapshotId: options.sourceSnapshotId,

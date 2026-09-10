@@ -25,7 +25,6 @@ import {
   type BuildingPlan,
   type LocalPoint2,
   type SurfaceMeshPlan,
-  type TerrainChunkPlan,
   type WorldChunkPlan,
   type WorldPlan,
 } from "@osm3d/worldgen";
@@ -33,6 +32,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { vehicleMapPose, type VehicleMapPose } from "./driveMapPose.js";
 import { WorldBuilderClient } from "./worldBuilder.js";
+import { TerrainRuntime } from "./terrainRuntime.js";
 
 const FIXED_STEP = 1 / 60;
 
@@ -145,32 +145,6 @@ function geometryFromSurface(surface: SurfaceMeshPlan): THREE.BufferGeometry {
   return geometry;
 }
 
-function geometryFromTerrain(chunk: TerrainChunkPlan): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const indices: number[] = [];
-  for (let xIndex = 0; xIndex < chunk.columns; xIndex += 1) {
-    const x =
-      chunk.bounds.minX +
-      (xIndex / (chunk.columns - 1)) * (chunk.bounds.maxX - chunk.bounds.minX);
-    for (let zIndex = 0; zIndex < chunk.rows; zIndex += 1) {
-      const z =
-        chunk.bounds.minZ +
-        (zIndex / (chunk.rows - 1)) * (chunk.bounds.maxZ - chunk.bounds.minZ);
-      positions.push(x, chunk.heights[xIndex * chunk.rows + zIndex] ?? 0, z);
-    }
-  }
-  for (let xIndex = 0; xIndex < chunk.columns - 1; xIndex += 1) {
-    for (let zIndex = 0; zIndex < chunk.rows - 1; zIndex += 1) {
-      const a = xIndex * chunk.rows + zIndex;
-      const b = (xIndex + 1) * chunk.rows + zIndex;
-      const c = a + 1;
-      const d = b + 1;
-      indices.push(a, c, b, b, c, d);
-    }
-  }
-  return geometryFromSurface({ positions, indices });
-}
-
 function conformGeometryToTerrain(
   geometry: THREE.BufferGeometry,
   plan: WorldPlan,
@@ -254,12 +228,18 @@ export class WorldEngine {
   });
   private readonly controls: OrbitControls;
   private readonly physics = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
+  private readonly terrainRuntime = new TerrainRuntime(
+    this.scene,
+    this.physics,
+  );
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
   private readonly selectable: THREE.Object3D[] = [];
   private readonly keys = new Set<string>();
   private readonly chunkGroups = new Map<string, THREE.Group>();
   private readonly chunkBodies = new Map<string, RAPIER.RigidBody[]>();
+  private legacyGround: THREE.Mesh | undefined;
+  private legacyGroundBody: RAPIER.RigidBody | undefined;
   private readonly chassis: RAPIER.RigidBody;
   private readonly vehicle: RAPIER.DynamicRayCastVehicleController;
   private readonly vehicleVisual: VehicleVisual;
@@ -396,8 +376,17 @@ export class WorldEngine {
         ].sort()
       : affectedChunkIds(previousPlan, result.plan, changedTargets);
 
+    this.terrainRuntime.sync(
+      result.plan,
+      definition.world.settings.visualStyle === "night",
+    );
     this.definition = definition;
     this.plan = result.plan;
+    this.removeLegacyGround();
+    if (!this.plan.terrain) {
+      this.buildGround();
+      this.buildPhysicsGround();
+    }
     this.buildDurationMs = result.durationMs;
     this.lastRebuiltChunks = rebuiltChunkIds.length;
     for (const chunkId of rebuiltChunkIds) {
@@ -521,24 +510,10 @@ export class WorldEngine {
 
   private buildGround(): void {
     if (this.plan.terrain) {
-      const material = new THREE.MeshStandardMaterial({
-        color:
-          this.definition.world.settings.visualStyle === "night"
-            ? 0x18251c
-            : 0x88a66b,
-        roughness: 0.96,
-      });
-      for (const chunk of this.plan.terrain.chunks) {
-        const ground = new THREE.Mesh(
-          geometryFromTerrain(chunk),
-          material.clone(),
-        );
-        ground.receiveShadow = true;
-        ground.name = chunk.id;
-        ground.userData.permanent = true;
-        this.scene.add(ground);
-      }
-      material.dispose();
+      this.terrainRuntime.sync(
+        this.plan,
+        this.definition.world.settings.visualStyle === "night",
+      );
       return;
     }
     const size = this.worldSize();
@@ -556,7 +531,20 @@ export class WorldEngine {
     ground.position.set(size.centerX, 0, size.centerZ);
     ground.receiveShadow = true;
     ground.userData.permanent = true;
+    this.legacyGround = ground;
     this.scene.add(ground);
+  }
+
+  private removeLegacyGround(): void {
+    if (this.legacyGround) {
+      this.scene.remove(this.legacyGround);
+      disposeObject(this.legacyGround);
+      this.legacyGround = undefined;
+    }
+    if (this.legacyGroundBody) {
+      this.physics.removeRigidBody(this.legacyGroundBody);
+      this.legacyGroundBody = undefined;
+    }
   }
 
   private buildChunk(chunk: WorldChunkPlan): void {
@@ -565,6 +553,9 @@ export class WorldEngine {
     group.userData.chunkId = chunk.id;
 
     for (const index of chunk.landIndexes) {
+      // Terrain worlds paint land use onto the terrain itself; no large overlay
+      // triangles can span a road cutting. Legacy flat worlds retain overlays.
+      if (this.plan.terrain) continue;
       const area = this.plan.land[index];
       if (!area) continue;
       const shape = shapeFromRings(area.rings);
@@ -710,28 +701,7 @@ export class WorldEngine {
   private buildPhysicsGround(): void {
     this.physics.timestep = FIXED_STEP;
     if (this.plan.terrain) {
-      for (const chunk of this.plan.terrain.chunks) {
-        const body = this.physics.createRigidBody(
-          RAPIER.RigidBodyDesc.fixed().setTranslation(
-            (chunk.bounds.minX + chunk.bounds.maxX) / 2,
-            0,
-            (chunk.bounds.minZ + chunk.bounds.maxZ) / 2,
-          ),
-        );
-        this.physics.createCollider(
-          RAPIER.ColliderDesc.heightfield(
-            chunk.columns - 1,
-            chunk.rows - 1,
-            new Float32Array(chunk.heights),
-            {
-              x: chunk.bounds.maxX - chunk.bounds.minX,
-              y: 1,
-              z: chunk.bounds.maxZ - chunk.bounds.minZ,
-            },
-          ).setFriction(1.1),
-          body,
-        );
-      }
+      // TerrainRuntime installed matching colliders with the visible ground.
       return;
     }
     const size = this.worldSize();
@@ -742,6 +712,7 @@ export class WorldEngine {
         size.centerZ,
       ),
     );
+    this.legacyGroundBody = groundBody;
     this.physics.createCollider(
       RAPIER.ColliderDesc.cuboid(
         size.width / 2,
@@ -1164,9 +1135,14 @@ export class WorldEngine {
       chunks: this.plan.chunks.length,
       triangles: planTriangles(this.plan),
       terrainTriangles:
-        (this.plan.terrain?.chunks.length ?? 0) *
-        (this.plan.terrain?.cellsPerChunk ?? 0) ** 2 *
-        2,
+        this.plan.terrain?.chunks.reduce(
+          (sum, chunk) =>
+            sum +
+            (chunk.mesh
+              ? chunk.mesh.indices.length / 3
+              : (chunk.rows - 1) * (chunk.columns - 1) * 2),
+          0,
+        ) ?? 0,
       terrainChunks: this.plan.terrain?.chunks.length ?? 0,
       elevationProvider: this.plan.terrain?.provider ?? "flat legacy ground",
       elevationRange: this.plan.terrain

@@ -2,7 +2,7 @@
 
 Status: Active
 
-Last updated: 2026-08-31
+Last updated: 2026-09-10
 
 ## Working vertical slice
 
@@ -25,10 +25,11 @@ Implemented capabilities:
 - Cancelable, versioned Web Worker builds with deterministic 256 m chunks and a
   stable 64-bit build hash
 - Joined/mitered road strips, layer-aware intersection and end-cap surfaces,
-  grade-smoothed 3D road profiles, blended shoulders, terrain-conformed land,
+  grade-smoothed 3D road profiles, shared junction plateaus, physical shoulders,
   and extruded building meshes based at median footprint elevation
-- Deterministic 256 m terrain chunks with shared edges, 8 m Three.js meshes,
-  matching Rapier heightfields, and elevation-aware build hashes
+- Deterministic 256 m terrain chunks with shared edges and a 4 m base grid;
+  road-boundary clipping, matching Three.js/Rapier triangle meshes near roads,
+  heightfields elsewhere, land-use vertex colors, and elevation-aware hashes
 - Separate bridge deck geometry/colliders and drivable diagnosed open cuts for
   tunnels that cannot be represented as heightfield overhangs
 - Height and width provenance (`source`, `levels`/`lanes`, class/fallback, or
@@ -50,9 +51,11 @@ Implemented capabilities:
 
 ## Verification snapshot
 
-The current automated suite contains 34 unit, geometry, provider, and Rapier
-tests across eleven test files, plus the Chromium end-to-end workflow. The expected
-gates are:
+The September terrain increment adds fourteen geometry, hashing, runtime and vehicle
+regressions, plus a browser regression for road widening, hiding, undo and driving
+after terrain replacement. See [ADR-0006](decisions/0006-road-boundary-terrain-and-collision.md)
+for the implementation, coverage and known limitations. The earlier 250 ms
+fixture-generation budget is currently unmet. The expected gates are:
 
 ```text
 pnpm format:check

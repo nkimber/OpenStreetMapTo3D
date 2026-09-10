@@ -11,7 +11,7 @@ import type {
 import { ElevationSnapshotSchema } from "@osm3d/contracts";
 import type { DatabasePool } from "./database.js";
 
-const GENERATOR_VERSION = "0.3.0";
+const GENERATOR_VERSION = "0.5.0";
 
 interface WorldRow {
   id: string;

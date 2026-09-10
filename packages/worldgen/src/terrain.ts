@@ -4,6 +4,15 @@ import type {
   Wgs84Position,
 } from "@osm3d/contracts";
 import { localToWgs84, wgs84ToLocal } from "@osm3d/geo";
+import { deterministicHash } from "./hash.js";
+import {
+  appendPolygon,
+  SurfaceIndex,
+  subtractTriangle,
+  triangleHeight,
+  type SurfaceMesh,
+  type SurfacePoint,
+} from "./surface.js";
 
 export interface TerrainPoint {
   x: number;
@@ -22,6 +31,12 @@ export interface TerrainChunkPlan {
   bounds: { minX: number; minZ: number; maxX: number; maxZ: number };
   minHeight: number;
   maxHeight: number;
+  /** Road-boundary tessellation. Rendering and physics consume this exact mesh. */
+  mesh?: SurfaceMesh;
+  /** Index-buffer offsets for each x-major grid cell, plus a terminal offset. */
+  cellOffsets?: number[];
+  /** Computed in the Worker to avoid hashing large mesh buffers on the UI thread. */
+  contentHash?: string;
 }
 
 export interface TerrainPlan {
@@ -33,6 +48,7 @@ export interface TerrainPlan {
   provider: ElevationSnapshot["provider"];
   dataset: string;
   verticalDatum: string;
+  roadSurface?: SurfaceMesh;
 }
 
 export interface TerrainRoadProfile {
@@ -385,6 +401,11 @@ function gradeTerrainHeight(
       ...groundCandidates.map((candidate) => candidate.influence),
     );
     height += (target - height) * strongestInfluence;
+    // Full-strength pavement constraints take precedence over neighboring blends.
+    for (const candidate of groundCandidates) {
+      if (candidate.influence === 1)
+        height = Math.min(height, candidate.target);
+    }
   }
 
   for (const [roadIndex, match] of roadMatches) {
@@ -411,6 +432,7 @@ export function buildTerrainPlan(input: {
   junctions?: TerrainJunctionProfile[];
   /** @deprecated Use roads with tunnel=true. */
   tunnelRoads?: TerrainRoadProfile[];
+  roadSurface?: SurfaceMesh;
 }): TerrainPlan {
   const cellsPerChunk = input.cellsPerChunk ?? 64;
   const sampler = createElevationSampler(input.elevation, input.anchor);
@@ -427,6 +449,9 @@ export function buildTerrainPlan(input: {
   const minChunkZ = Math.floor((bounds.minZ - padding) / input.chunkSize);
   const maxChunkZ = Math.floor((bounds.maxZ + padding) / input.chunkSize);
   const chunks: TerrainChunkPlan[] = [];
+  const roadIndex = input.roadSurface
+    ? new SurfaceIndex(input.roadSurface)
+    : undefined;
 
   for (let chunkX = minChunkX; chunkX <= maxChunkX; chunkX += 1) {
     for (let chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ += 1) {
@@ -462,6 +487,10 @@ export function buildTerrainPlan(input: {
         minHeight: Math.min(...heights),
         maxHeight: Math.max(...heights),
       });
+      if (roadIndex)
+        tessellateRoadBoundaries(chunks[chunks.length - 1]!, roadIndex);
+      const chunk = chunks[chunks.length - 1]!;
+      chunk.contentHash = deterministicHash(chunk);
     }
   }
   return {
@@ -473,8 +502,151 @@ export function buildTerrainPlan(input: {
     provider: input.elevation.provider,
     dataset: input.elevation.dataset,
     verticalDatum: input.elevation.verticalDatum,
+    ...(input.roadSurface ? { roadSurface: input.roadSurface } : {}),
   };
 }
+
+/** Shared edge profiles keep clipping-created vertices identical on either side. */
+function roadEdgeProfile(
+  a: SurfacePoint,
+  b: SurfacePoint,
+  roads: SurfaceIndex,
+): (p: SurfacePoint) => number | undefined {
+  const dx = b.x - a.x,
+    dz = b.z - a.z,
+    lengthSquared = dx * dx + dz * dz;
+  const knots = [0, 1];
+  for (const triangle of roads.within(
+    Math.min(a.x, b.x),
+    Math.min(a.z, b.z),
+    Math.max(a.x, b.x),
+    Math.max(a.z, b.z),
+  )) {
+    for (let i = 0; i < 3; i++) {
+      const c = triangle[i]!,
+        d = triangle[(i + 1) % 3]!;
+      const ex = d.x - c.x,
+        ez = d.z - c.z;
+      const denominator = dx * ez - dz * ex;
+      if (Math.abs(denominator) < 1e-10) continue;
+      const t = ((c.x - a.x) * ez - (c.z - a.z) * ex) / denominator;
+      const u = ((c.x - a.x) * dz - (c.z - a.z) * dx) / denominator;
+      if (t > 0 && t < 1 && u >= -1e-8 && u <= 1 + 1e-8) knots.push(t);
+    }
+  }
+  const values = [...new Set(knots)]
+    .sort((x, y) => x - y)
+    .map((t) => ({
+      t,
+      height: roads.height(a.x + t * dx, a.z + t * dz) ?? a.y + t * (b.y - a.y),
+    }));
+  return (p) => {
+    const t = ((p.x - a.x) * dx + (p.z - a.z) * dz) / lengthSquared;
+    if (
+      t < -1e-8 ||
+      t > 1 + 1e-8 ||
+      Math.abs((p.x - a.x) * dz - (p.z - a.z) * dx) > 1e-7
+    )
+      return undefined;
+    for (let i = 1; i < values.length; i++) {
+      const left = values[i - 1]!,
+        right = values[i]!;
+      if (t <= right.t + 1e-10) {
+        const progress = clamp(
+          (t - left.t) / Math.max(1e-12, right.t - left.t),
+          0,
+          1,
+        );
+        return left.height + progress * (right.height - left.height);
+      }
+    }
+    return values.at(-1)!.height;
+  };
+}
+
+function tessellateRoadBoundaries(
+  chunk: TerrainChunkPlan,
+  roads: SurfaceIndex,
+): void {
+  if (
+    !roads.within(
+      chunk.bounds.minX,
+      chunk.bounds.minZ,
+      chunk.bounds.maxX,
+      chunk.bounds.maxZ,
+    ).length
+  )
+    return;
+  const mesh: SurfaceMesh = { positions: [], indices: [] };
+  const cellOffsets: number[] = [];
+  const dx = (chunk.bounds.maxX - chunk.bounds.minX) / (chunk.columns - 1);
+  const dz = (chunk.bounds.maxZ - chunk.bounds.minZ) / (chunk.rows - 1);
+  const point = (column: number, row: number): SurfacePoint => ({
+    x: chunk.bounds.minX + column * dx,
+    y: chunk.heights[column * chunk.rows + row] ?? 0,
+    z: chunk.bounds.minZ + row * dz,
+  });
+  for (let column = 0; column < chunk.columns - 1; column++) {
+    for (let row = 0; row < chunk.rows - 1; row++) {
+      cellOffsets.push(mesh.indices.length);
+      const a = point(column, row),
+        b = point(column + 1, row);
+      const c = point(column, row + 1),
+        d = point(column + 1, row + 1);
+      const clips = roads
+        .within(a.x, a.z, d.x, d.z)
+        .filter(
+          (triangle) =>
+            Math.max(...triangle.map((p) => p.x)) >= a.x &&
+            Math.min(...triangle.map((p) => p.x)) <= d.x &&
+            Math.max(...triangle.map((p) => p.z)) >= a.z &&
+            Math.min(...triangle.map((p) => p.z)) <= d.z,
+        );
+      const edgeProfiles = clips.length
+        ? [
+            [a, b],
+            [a, c],
+            [b, d],
+            [c, d],
+            [b, c],
+          ].map(([start, end]) => roadEdgeProfile(start!, end!, roads))
+        : [];
+      for (const triangle of [
+        [a, c, b],
+        [b, c, d],
+      ]) {
+        let pieces = [triangle];
+        for (const clip of clips)
+          pieces = pieces.flatMap((piece) => subtractTriangle(piece, clip));
+        for (const piece of pieces) {
+          // New vertices on pavement edges meet the road exactly. The remaining
+          // terrain triangles are the physical shoulder, so no overlapping skirt exists.
+          appendPolygon(
+            mesh,
+            piece.map((p) => ({
+              ...p,
+              y:
+                roads.height(p.x, p.z) ??
+                edgeProfiles
+                  .map((sample) => sample(p))
+                  .find((height) => height !== undefined) ??
+                p.y,
+            })),
+          );
+        }
+      }
+    }
+  }
+  cellOffsets.push(mesh.indices.length);
+  chunk.mesh = mesh;
+  chunk.cellOffsets = cellOffsets;
+  for (let i = 1; i < mesh.positions.length; i += 3) {
+    chunk.minHeight = Math.min(chunk.minHeight, mesh.positions[i]!);
+    chunk.maxHeight = Math.max(chunk.maxHeight, mesh.positions[i]!);
+  }
+}
+
+const roadIndexes = new WeakMap<TerrainPlan, SurfaceIndex>();
 
 export function sampleTerrainPlan(
   terrain: TerrainPlan | undefined,
@@ -504,7 +676,50 @@ export function sampleTerrainPlan(
   const tz = row - row0;
   const value = (xIndex: number, zIndex: number) =>
     chunk.heights[xIndex * chunk.rows + zIndex] ?? 0;
-  const west = value(column0, row0) * (1 - tz) + value(column0, row1) * tz;
-  const east = value(column1, row0) * (1 - tz) + value(column1, row1) * tz;
-  return west * (1 - tx) + east * tx;
+  if (chunk.mesh && chunk.cellOffsets) {
+    const cell =
+      Math.min(column0, chunk.columns - 2) * (chunk.rows - 1) +
+      Math.min(row0, chunk.rows - 2);
+    const mesh = chunk.mesh;
+    const vertex = (index: number): SurfacePoint => ({
+      x: mesh.positions[index * 3]!,
+      y: mesh.positions[index * 3 + 1]!,
+      z: mesh.positions[index * 3 + 2]!,
+    });
+    for (
+      let i = chunk.cellOffsets[cell]!;
+      i < chunk.cellOffsets[cell + 1]!;
+      i += 3
+    ) {
+      const height = triangleHeight(
+        [
+          vertex(mesh.indices[i]!),
+          vertex(mesh.indices[i + 1]!),
+          vertex(mesh.indices[i + 2]!),
+        ],
+        x,
+        z,
+      );
+      if (height !== undefined) return height;
+    }
+    // Pavement replaces the terrain here. Queries for recovery/building placement
+    // use the actual drivable surface, not the removed grid underneath it.
+    if (terrain.roadSurface) {
+      let roads = roadIndexes.get(terrain);
+      if (!roads) {
+        roads = new SurfaceIndex(terrain.roadSurface);
+        roadIndexes.set(terrain, roads);
+      }
+      const height = roads.height(x, z);
+      if (height !== undefined) return height;
+    }
+  }
+  // The same b-c diagonal as the rendered grid and Rapier heightfield.
+  return tx + tz <= 1
+    ? value(column0, row0) * (1 - tx - tz) +
+        value(column1, row0) * tx +
+        value(column0, row1) * tz
+    : value(column1, row1) * (tx + tz - 1) +
+        value(column1, row0) * (1 - tz) +
+        value(column0, row1) * (1 - tx);
 }

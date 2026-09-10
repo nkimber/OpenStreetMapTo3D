@@ -150,6 +150,13 @@ demand until execution time is acceptable for every pull request.
 
 ## Manual exploratory checklist
 
+Road-boundary regression coverage is recorded in
+[ADR-0006](decisions/0006-road-boundary-terrain-and-collision.md): full-width
+pavement exclusion, nonplanar height queries, shared seams, junction approaches,
+land-color occlusion prevention, edit/undo and changed-DEM runtime replacement,
+and an uphill Rapier vehicle replay. Rendering and collision are ray-cast
+independently; a passing source-height test alone is insufficient.
+
 - Compare the 2D preview and generated road topology.
 - Drive across intersections and chunk boundaries.
 - Drive uphill/downhill and across a terrain-chunk seam; verify no visible or
