@@ -1,4 +1,5 @@
 import type { ImportJob, ImportRequest, Wgs84Bounds } from "@osm3d/contracts";
+import { AreaSelectionSchema } from "@osm3d/contracts";
 
 export const downloadCacheStorageKey = "osm3d.download-cache.v1";
 export const downloadCacheLimit = 10;
@@ -60,7 +61,17 @@ function asRequest(value: unknown): ImportRequest | undefined {
     !bounds
   )
     return;
-  return { provider, queryVersion, bounds };
+  const selection =
+    request.selection === undefined
+      ? undefined
+      : AreaSelectionSchema.safeParse(request.selection);
+  if (selection && !selection.success) return;
+  return {
+    provider,
+    queryVersion,
+    bounds,
+    ...(selection?.success ? { selection: selection.data } : {}),
+  };
 }
 
 function asCompletedJob(value: unknown): ImportJob | undefined {
@@ -101,6 +112,14 @@ function requestKey(request: ImportRequest): string {
     bounds.south,
     bounds.east,
     bounds.north,
+    request.selection
+      ? [
+          request.selection.center.longitude,
+          request.selection.center.latitude,
+          request.selection.sizeMeters,
+          request.selection.bearingDegrees,
+        ].join(",")
+      : "",
   ].join(":");
 }
 

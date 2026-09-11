@@ -24,6 +24,8 @@ MVP from later roadmap items.
 
 ## Engineering
 
+- [Selection rotation](selection-rotation.md) explains independent map/selection
+  controls, rotated import queries, persistence and boundary semantics.
 - [Garage and neighborhood graphics](graphics-and-garage.md) covers CC0 cars,
   saved vehicle choices, procedural house details and appearance limitations.
 - [Technical architecture](technical-architecture.md) describes containers,

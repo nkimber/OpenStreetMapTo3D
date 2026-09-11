@@ -3,6 +3,7 @@ import {
   Suspense,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -23,7 +24,8 @@ import {
   forgetDownloadedData,
   rememberDownloadedData,
 } from "./downloadCache.js";
-import { boundsFromCenter, formatArea } from "./geo.js";
+import { formatArea } from "./geo.js";
+import { normalizeBearing, selectionBounds } from "@osm3d/geo";
 import { loadRecentSearches, rememberRecentSearch } from "./recentSearches.js";
 
 const WorldWorkspace = lazy(async () => {
@@ -52,6 +54,7 @@ export function App() {
   const [ready, setReady] = useState<boolean>();
   const [center, setCenter] = useState<Wgs84Position>(sampleCenter);
   const [sizeMeters, setSizeMeters] = useState(1_000);
+  const [bearingDegrees, setBearingDegrees] = useState(0);
   const [provider, setProvider] = useState<"fixture" | "overpass">("fixture");
   const [query, setQuery] = useState("");
   const [coordinateLatitude, setCoordinateLatitude] = useState(
@@ -72,10 +75,24 @@ export function App() {
   const [definition, setDefinition] = useState<WorldDefinition>();
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string>();
-  const bounds = useMemo(
-    () => boundsFromCenter(center, sizeMeters),
-    [center, sizeMeters],
+  const selection = useMemo(
+    () => ({ center, sizeMeters, bearingDegrees }),
+    [center, sizeMeters, bearingDegrees],
   );
+  const bounds = useMemo(() => selectionBounds(selection), [selection]);
+  const requestKey = JSON.stringify({ provider, bounds, selection });
+  const currentRequestRef = useRef(requestKey);
+  currentRequestRef.current = requestKey;
+  const changeBearing = (degrees: number) => {
+    setBearingDegrees(normalizeBearing(degrees));
+    setImportJob(undefined);
+    setPreview(undefined);
+  };
+  const rotateSelection = (delta: number) => {
+    setBearingDegrees((value) => normalizeBearing(value + delta));
+    setImportJob(undefined);
+    setPreview(undefined);
+  };
 
   const refreshWorlds = async () => {
     try {
@@ -150,12 +167,19 @@ export function App() {
   const importArea = async () => {
     setError(undefined);
     setImportJob(undefined);
-    const request: ImportRequest = { provider, bounds, queryVersion: 1 };
+    const request: ImportRequest = {
+      provider,
+      bounds,
+      queryVersion: 1,
+      ...(bearingDegrees ? { selection } : {}),
+    };
+    const stillCurrent = () => currentRequestRef.current === requestKey;
     try {
       const cached = findCachedDownload(request);
       if (cached?.snapshotId) {
         try {
           const cachedPreview = await api.getSnapshotPreview(cached.snapshotId);
+          if (!stillCurrent()) return;
           setImportJob({ ...cached, stage: "browser-cache" });
           setPreview(cachedPreview);
           return;
@@ -172,20 +196,24 @@ export function App() {
       }
 
       let job = await api.createImport(request);
+      if (!stillCurrent()) return;
       setImportJob(job);
       while (!["complete", "failed", "cancelled"].includes(job.status)) {
         await sleep(2_000);
         job = await api.getImport(job.id);
+        if (!stillCurrent()) return;
         setImportJob(job);
       }
       if (job.status === "failed")
         throw new Error(job.errorMessage ?? "The map import failed.");
       if (job.snapshotId) {
         const loadedPreview = await api.getSnapshotPreview(job.snapshotId);
+        if (!stillCurrent()) return;
         setPreview(loadedPreview);
         rememberDownloadedData(request, job);
       }
     } catch (reason) {
+      if (!stillCurrent()) return;
       setError(
         reason instanceof Error ? reason.message : "The map import failed.",
       );
@@ -202,7 +230,7 @@ export function App() {
         snapshotId: importJob.snapshotId,
         bounds,
         anchor: center,
-        settings,
+        settings: { ...settings, ...(bearingDegrees ? { selection } : {}) },
       });
       const loaded = await api.getWorldDefinition(world.id);
       setDefinition(loaded);
@@ -428,6 +456,46 @@ export function App() {
               <span>2 km</span>
             </div>
             <label className="field-label">
+              <span>
+                Selection rotation:{" "}
+                <output aria-live="polite">{bearingDegrees}°</output>
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="359"
+                step="1"
+                value={bearingDegrees}
+                aria-label="Selection rotation in degrees"
+                className="range-control"
+                onChange={(event) => changeBearing(Number(event.target.value))}
+              />
+            </label>
+            <div className="selection-rotation-actions">
+              <button
+                type="button"
+                aria-label="Rotate selection left"
+                onClick={() => rotateSelection(-5)}
+              >
+                ↶ 5°
+              </button>
+              <button type="button" onClick={() => changeBearing(0)}>
+                Reset rotation
+              </button>
+              <button
+                type="button"
+                aria-label="Rotate selection right"
+                onClick={() => rotateSelection(5)}
+              >
+                5° ↷
+              </button>
+            </div>
+            <p className="selection-rotation-help">
+              Click the map, then Ctrl+←/→ rotates the selection. Shift+←/→
+              rotates only the map. Complete features may cross the selection
+              edge; terrain includes surrounding padding.
+            </p>
+            <label className="field-label">
               Data source
               <select
                 value={provider}
@@ -645,6 +713,8 @@ export function App() {
         <MapPreview
           center={center}
           bounds={bounds}
+          selection={selection}
+          onRotate={rotateSelection}
           features={preview?.features ?? []}
           onCenterChange={(next) => {
             setCenter(next);

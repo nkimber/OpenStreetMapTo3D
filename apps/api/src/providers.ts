@@ -1,4 +1,9 @@
-import type { GeocodeResult, Wgs84Bounds } from "@osm3d/contracts";
+import type {
+  AreaSelection,
+  GeocodeResult,
+  Wgs84Bounds,
+} from "@osm3d/contracts";
+import { selectionRing, selectionBounds } from "@osm3d/geo";
 import type { OverpassResponse } from "@osm3d/osm";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
@@ -81,8 +86,16 @@ export async function geocode(
   return results;
 }
 
-function overpassQuery(bounds: Wgs84Bounds): string {
-  const bbox = `${bounds.south},${bounds.west},${bounds.north},${bounds.east}`;
+export function overpassQuery(
+  bounds: Wgs84Bounds,
+  selection?: AreaSelection,
+): string {
+  const bbox = selection
+    ? `poly:"${selectionRing(selection)
+        .slice(0, -1)
+        .map(([lon, lat]) => `${lat} ${lon}`)
+        .join(" ")}"`
+    : `${bounds.south},${bounds.west},${bounds.north},${bounds.east}`;
   return `[out:json][timeout:25];
 (
   way["highway"](${bbox});
@@ -106,11 +119,37 @@ export async function fetchOsmData(
   provider: "overpass" | "fixture",
   bounds: Wgs84Bounds,
   config: AppConfig,
+  selection?: AreaSelection,
 ): Promise<{ raw: OverpassResponse; query: string }> {
   if (provider === "fixture") {
-    return { raw: createSampleOverpass(bounds), query: "bundled-sample-v1" };
+    const raw = createSampleOverpass(
+      selection ? selectionBounds({ ...selection, bearingDegrees: 0 }) : bounds,
+    );
+    if (selection) {
+      const angle = (selection.bearingDegrees * Math.PI) / 180;
+      const scale = Math.max(
+        0.15,
+        Math.cos((selection.center.latitude * Math.PI) / 180),
+      );
+      for (const element of raw.elements)
+        for (const point of element.geometry ?? []) {
+          const east = (point.lon - selection.center.longitude) * scale;
+          const north = point.lat - selection.center.latitude;
+          point.lon =
+            selection.center.longitude +
+            (east * Math.cos(angle) + north * Math.sin(angle)) / scale;
+          point.lat =
+            selection.center.latitude -
+            east * Math.sin(angle) +
+            north * Math.cos(angle);
+        }
+    }
+    return {
+      raw,
+      query: selection ? "bundled-rotated-sample-v1" : "bundled-sample-v1",
+    };
   }
-  const query = overpassQuery(bounds);
+  const query = overpassQuery(bounds, selection);
   const response = await fetch(config.OVERPASS_BASE_URL, {
     method: "POST",
     headers: {

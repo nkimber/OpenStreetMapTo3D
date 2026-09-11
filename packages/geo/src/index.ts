@@ -1,4 +1,53 @@
-import type { Wgs84Bounds, Wgs84Position } from "@osm3d/contracts";
+import type {
+  AreaSelection,
+  Wgs84Bounds,
+  Wgs84Position,
+} from "@osm3d/contracts";
+
+export function normalizeBearing(degrees: number): number {
+  return ((degrees % 360) + 360) % 360;
+}
+
+/** Clockwise from north; same local metre approximation as the setup map. */
+export function selectionRing(selection: AreaSelection): [number, number][] {
+  const { center, sizeMeters, bearingDegrees } = selection;
+  const angle = (bearingDegrees * Math.PI) / 180;
+  const half = sizeMeters / 2;
+  const scale =
+    111320 * Math.max(0.15, Math.cos((center.latitude * Math.PI) / 180));
+  const corners = [
+    [-half, -half],
+    [half, -half],
+    [half, half],
+    [-half, half],
+  ].map(([east, north]): [number, number] => [
+    center.longitude +
+      (east! * Math.cos(angle) + north! * Math.sin(angle)) / scale,
+    center.latitude +
+      (-east! * Math.sin(angle) + north! * Math.cos(angle)) / 111320,
+  ]);
+  return [...corners, [...corners[0]!] as [number, number]];
+}
+
+export function selectionBounds(selection: AreaSelection): Wgs84Bounds {
+  const ring = selectionRing(selection);
+  return {
+    west: Math.min(...ring.map((p) => p[0])),
+    east: Math.max(...ring.map((p) => p[0])),
+    south: Math.min(...ring.map((p) => p[1])),
+    north: Math.max(...ring.map((p) => p[1])),
+  };
+}
+
+export function selectionMatchesBounds(
+  selection: AreaSelection,
+  bounds: Wgs84Bounds,
+): boolean {
+  const expected = selectionBounds(selection);
+  return (Object.keys(expected) as (keyof Wgs84Bounds)[]).every(
+    (key) => Math.abs(bounds[key] - expected[key]) < 1e-7,
+  );
+}
 
 const WGS84_A = 6_378_137;
 const WGS84_E2 = 6.694_379_990_14e-3;

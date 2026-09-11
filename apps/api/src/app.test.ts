@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
+import { selectionBounds } from "@osm3d/geo";
 import type { AppConfig } from "./config.js";
 import type { DatabasePool } from "./database.js";
 
@@ -38,6 +39,49 @@ function mockPool(): DatabasePool {
 }
 
 describe("API boundary behavior", () => {
+  it("rejects an inconsistent rotated selection envelope", async () => {
+    app = await buildApp({ config, pool: mockPool() });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/imports",
+      payload: {
+        provider: "fixture",
+        bounds: { west: -75.2, south: 39.9, east: -75.19, north: 39.91 },
+        selection: {
+          center: { longitude: -75.2, latitude: 39.9, height: 0 },
+          sizeMeters: 1000,
+          bearingDegrees: 45,
+        },
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("INVALID_SELECTION");
+  });
+  it("allows a 4 square km rotated square even though its envelope is larger", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    app = await buildApp({
+      config: { ...config, IMPORT_EXECUTION_MODE: "worker" },
+      pool: { query } as unknown as DatabasePool,
+    });
+    const selection = {
+      center: { longitude: -84, latitude: 34, height: 0 },
+      sizeMeters: 2000,
+      bearingDegrees: 45,
+    };
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/imports",
+      payload: {
+        provider: "fixture",
+        bounds: selectionBounds(selection),
+        selection,
+      },
+    });
+    expect(response.statusCode).toBe(202);
+  });
   it("reports liveness and database readiness", async () => {
     app = await buildApp({ config, pool: mockPool() });
     const health = await app.inject({ method: "GET", url: "/api/health" });

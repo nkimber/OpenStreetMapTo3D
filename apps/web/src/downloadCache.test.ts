@@ -43,6 +43,36 @@ function completedJob(index = 0): ImportJob {
 }
 
 describe("download cache", () => {
+  it("does not reuse another orientation with the same envelope", () => {
+    const storage = memoryStorage();
+    const selection = {
+      center: { longitude: -75.2, latitude: 39.9, height: 0 },
+      sizeMeters: 1000,
+      bearingDegrees: 30,
+    };
+    const rotated = { ...request(), selection };
+    rememberDownloadedData(rotated, completedJob(8), storage);
+    expect(findCachedDownload(rotated, storage)?.featureCount).toBe(8);
+    expect(
+      findCachedDownload(
+        {
+          ...rotated,
+          selection: {
+            ...selection,
+            center: { latitude: 39.9, longitude: -75.2, height: 0 },
+          },
+        },
+        storage,
+      )?.featureCount,
+    ).toBe(8);
+    expect(
+      findCachedDownload(
+        { ...rotated, selection: { ...selection, bearingDegrees: 60 } },
+        storage,
+      ),
+    ).toBeUndefined();
+    expect(findCachedDownload(request(), storage)).toBeUndefined();
+  });
   it("reuses a successful import only for the exact request", () => {
     const storage = memoryStorage();
     rememberDownloadedData(request(), completedJob(4), storage);

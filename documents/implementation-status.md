@@ -13,6 +13,8 @@ through generation, editing, driving, and reopening the persisted result.
 
 Implemented capabilities:
 
+- Independent selection rotation using Ctrl+Left/Right, slider and reset, with
+  rotated Overpass queries, cache identity and persisted project boundaries
 - Garage with three locally bundled CC0 cars, body paint, persistent device
   preferences, animated wheels and vehicle lighting; safe modal pause and
   load-failure fallback

@@ -160,10 +160,18 @@ export const GeocodeResultSchema = z.object({
 
 export type GeocodeResult = z.infer<typeof GeocodeResultSchema>;
 
+export const AreaSelectionSchema = z.object({
+  center: Wgs84PositionSchema,
+  sizeMeters: z.number().min(400).max(2000),
+  bearingDegrees: z.number().min(0).lt(360),
+});
+export type AreaSelection = z.infer<typeof AreaSelectionSchema>;
+
 export const ImportRequestSchema = z.object({
   provider: z.enum(["overpass", "fixture"]),
   bounds: Wgs84BoundsSchema,
   queryVersion: z.number().int().positive().default(1),
+  selection: AreaSelectionSchema.optional(),
 });
 
 export type ImportRequest = z.infer<typeof ImportRequestSchema>;
@@ -211,6 +219,7 @@ export const SnapshotPreviewSchema = z.object({
 export type SnapshotPreview = z.infer<typeof SnapshotPreviewSchema>;
 
 export const GenerationSettingsSchema = z.object({
+  selection: AreaSelectionSchema.optional(),
   buildingLevelHeight: z.number().min(2).max(6).default(3),
   defaultBuildingHeight: z.number().min(2).max(100).default(8),
   includeMinorPaths: z.boolean().default(true),

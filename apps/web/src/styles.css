@@ -1207,3 +1207,28 @@ button:disabled {
   outline: 3px solid #92e4d9;
   outline-offset: 3px;
 }
+.selection-rotation-actions {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+.selection-rotation-actions button {
+  flex: 1;
+  border: 1px solid #bdccbf;
+  border-radius: 8px;
+  padding: 10px 6px;
+  color: #204635;
+  background: #edf3e9;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.selection-rotation-actions button:focus-visible {
+  outline: 3px solid #db772d;
+  outline-offset: 2px;
+}
+.selection-rotation-help {
+  color: #547060;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}

@@ -49,10 +49,16 @@ export async function createImportJob(
      WHERE snapshot.provider = $1
        AND snapshot.query_version = $2
        AND snapshot.query->'bounds' = $3::jsonb
+       AND COALESCE(snapshot.query->'selection', 'null'::jsonb) = $4::jsonb
      GROUP BY snapshot.id, snapshot.retrieved_at
      ORDER BY snapshot.retrieved_at DESC
      LIMIT 1`,
-    [request.provider, request.queryVersion, JSON.stringify(request.bounds)],
+    [
+      request.provider,
+      request.queryVersion,
+      JSON.stringify(request.bounds),
+      JSON.stringify(request.selection ?? null),
+    ],
   );
   const snapshot = cached.rows[0];
   const result = snapshot
@@ -116,7 +122,7 @@ export async function executeImportJob(
   try {
     await updateJob(pool, id, "running", 10, "downloading-map-and-elevation");
     const [{ raw, query }, elevation] = await Promise.all([
-      fetchOsmData(request.provider, request.bounds, config),
+      fetchOsmData(request.provider, request.bounds, config, request.selection),
       fetchElevationData(request.provider, request.bounds, config),
     ]);
     await updateJob(pool, id, "running", 45, "normalizing");
@@ -124,7 +130,9 @@ export async function executeImportJob(
     const rawJson = JSON.stringify(raw);
     const osmContentHash = createHash("sha256").update(rawJson).digest("hex");
     const contentHash = createHash("sha256")
-      .update(`${osmContentHash}:${elevation.snapshot.contentHash}`)
+      .update(
+        `${osmContentHash}:${elevation.snapshot.contentHash}${request.selection ? `:${JSON.stringify(request.selection)}` : ""}`,
+      )
       .digest("hex");
     const compressed = await gzipAsync(Buffer.from(rawJson));
     await mkdir(config.OSM_CACHE_DIRECTORY, { recursive: true });
@@ -160,6 +168,7 @@ export async function executeImportJob(
           JSON.stringify({
             query,
             bounds: request.bounds,
+            ...(request.selection ? { selection: request.selection } : {}),
             elevationProvider: elevation.snapshot.provider,
             elevationDataset: elevation.snapshot.dataset,
           }),

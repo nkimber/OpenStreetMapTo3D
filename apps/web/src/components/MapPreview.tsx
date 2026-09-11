@@ -2,9 +2,11 @@ import { useEffect, useRef } from "react";
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
+import { selectionRing } from "@osm3d/geo";
 import type { Feature, FeatureCollection, Geometry, Polygon } from "geojson";
 import type {
   NormalizedFeature,
+  AreaSelection,
   Wgs84Bounds,
   Wgs84Position,
 } from "@osm3d/contracts";
@@ -12,6 +14,8 @@ import type {
 interface MapPreviewProps {
   center: Wgs84Position;
   bounds: Wgs84Bounds;
+  selection: AreaSelection;
+  onRotate: (delta: number) => void;
   features: NormalizedFeature[];
   onCenterChange: (center: Wgs84Position) => void;
 }
@@ -21,21 +25,13 @@ const previewSourceId = "osm-preview";
 
 maplibregl.setWorkerUrl(workerUrl);
 
-function boundsFeature(bounds: Wgs84Bounds): Feature<Polygon> {
+function boundsFeature(selection: AreaSelection): Feature<Polygon> {
   return {
     type: "Feature",
     properties: {},
     geometry: {
       type: "Polygon",
-      coordinates: [
-        [
-          [bounds.west, bounds.south],
-          [bounds.east, bounds.south],
-          [bounds.east, bounds.north],
-          [bounds.west, bounds.north],
-          [bounds.west, bounds.south],
-        ],
-      ],
+      coordinates: [selectionRing(selection)],
     },
   };
 }
@@ -55,7 +51,8 @@ function previewFeatureCollection(
 
 export function MapPreview({
   center,
-  bounds,
+  selection,
+  onRotate,
   features,
   onCenterChange,
 }: MapPreviewProps) {
@@ -63,6 +60,8 @@ export function MapPreview({
   const mapRef = useRef<MapLibreMap | null>(null);
   const callbackRef = useRef(onCenterChange);
   callbackRef.current = onCenterChange;
+  const latest = useRef({ center, selection, features });
+  latest.current = { center, selection, features };
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -91,7 +90,7 @@ export function MapPreview({
     map.on("load", () => {
       map.addSource(previewSourceId, {
         type: "geojson",
-        data: previewFeatureCollection(features),
+        data: previewFeatureCollection(latest.current.features),
       });
       map.addLayer({
         id: "osm-preview-land",
@@ -133,7 +132,7 @@ export function MapPreview({
       });
       map.addSource(selectionSourceId, {
         type: "geojson",
-        data: boundsFeature(bounds),
+        data: boundsFeature(latest.current.selection),
       });
       map.addLayer({
         id: "world-selection-fill",
@@ -154,6 +153,11 @@ export function MapPreview({
     });
     map.on("moveend", () => {
       const next = map.getCenter();
+      if (
+        Math.abs(next.lng - latest.current.center.longitude) < 1e-7 &&
+        Math.abs(next.lat - latest.current.center.latitude) < 1e-7
+      )
+        return;
       callbackRef.current({
         longitude: next.lng,
         latitude: next.lat,
@@ -185,8 +189,8 @@ export function MapPreview({
   useEffect(() => {
     const source = mapRef.current?.getSource(selectionSourceId) as
       GeoJSONSource | undefined;
-    source?.setData(boundsFeature(bounds));
-  }, [bounds]);
+    source?.setData(boundsFeature(selection));
+  }, [selection]);
 
   useEffect(() => {
     const source = mapRef.current?.getSource(previewSourceId) as
@@ -199,6 +203,19 @@ export function MapPreview({
       className="map-preview"
       ref={containerRef}
       aria-label="Neighborhood selection map"
+      onKeyDownCapture={(event) => {
+        if (
+          !event.ctrlKey ||
+          event.altKey ||
+          event.metaKey ||
+          event.shiftKey ||
+          !["ArrowLeft", "ArrowRight"].includes(event.key)
+        )
+          return;
+        event.preventDefault();
+        event.stopPropagation();
+        onRotate(event.key === "ArrowLeft" ? -5 : 5);
+      }}
     />
   );
 }

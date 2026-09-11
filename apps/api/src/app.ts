@@ -9,7 +9,7 @@ import {
   WorldCreateRequestSchema,
   WorldOverrideSchema,
 } from "@osm3d/contracts";
-import { boundsAreaSquareKm } from "@osm3d/geo";
+import { boundsAreaSquareKm, selectionMatchesBounds } from "@osm3d/geo";
 import { z, ZodError } from "zod";
 import type { AppConfig } from "./config.js";
 import type { DatabasePool } from "./database.js";
@@ -69,7 +69,17 @@ export async function buildApp({
 
   app.post("/api/imports", async (request, reply) => {
     const body = ImportRequestSchema.parse(request.body);
-    const area = boundsAreaSquareKm(body.bounds);
+    if (body.selection && !selectionMatchesBounds(body.selection, body.bounds))
+      return reply.code(400).send({
+        error: {
+          code: "INVALID_SELECTION",
+          message:
+            "The download bounds must contain the rotated selection exactly.",
+        },
+      });
+    const area = body.selection
+      ? body.selection.sizeMeters ** 2 / 1_000_000
+      : boundsAreaSquareKm(body.bounds);
     if (area > config.MAX_IMPORT_AREA_SQUARE_KM) {
       return reply.code(413).send({
         error: {
@@ -151,6 +161,22 @@ export async function buildApp({
 
   app.post("/api/worlds", async (request, reply) => {
     const body = WorldCreateRequestSchema.parse(request.body);
+    if (
+      body.settings.selection &&
+      (!selectionMatchesBounds(body.settings.selection, body.bounds) ||
+        Math.abs(
+          body.settings.selection.center.latitude - body.anchor.latitude,
+        ) > 1e-7 ||
+        Math.abs(
+          body.settings.selection.center.longitude - body.anchor.longitude,
+        ) > 1e-7)
+    )
+      return reply.code(400).send({
+        error: {
+          code: "INVALID_SELECTION",
+          message: "World bounds and anchor must match its rotated selection.",
+        },
+      });
     return reply.code(201).send(await createWorld(pool, body));
   });
 

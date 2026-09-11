@@ -9,6 +9,7 @@ import type {
   WorldSummary,
 } from "@osm3d/contracts";
 import { ElevationSnapshotSchema } from "@osm3d/contracts";
+import { selectionRing } from "@osm3d/geo";
 import type { DatabasePool } from "./database.js";
 
 const GENERATOR_VERSION = "0.5.0";
@@ -179,6 +180,11 @@ const worldSelect = `
   FROM world_projects`;
 
 function boundaryGeoJson(request: WorldCreateRequest): object {
+  if (request.settings.selection)
+    return {
+      type: "Polygon",
+      coordinates: [selectionRing(request.settings.selection)],
+    };
   const bounds = request.bounds;
   return {
     type: "Polygon",
