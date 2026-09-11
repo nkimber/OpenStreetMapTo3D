@@ -88,6 +88,13 @@ export function WorldWorkspace({
   const updateAbortRef = useRef<AbortController | undefined>(undefined);
   const [mode, setMode] = useState<EngineMode>("inspect");
   const [garageOpen, setGarageOpen] = useState(false);
+  const [roadSignsEnabled, setRoadSignsEnabled] = useState(() => {
+    try {
+      return localStorage.getItem("streetrove.roadSigns") === "true";
+    } catch {
+      return false;
+    }
+  });
   const [vehicleChoice, setVehicleChoice] = useState(savedVehicleChoice);
   const modeRef = useRef(mode);
   modeRef.current = mode;
@@ -182,6 +189,15 @@ export function WorldWorkspace({
   useEffect(() => {
     engineRef.current?.setMode(mode);
   }, [mode]);
+
+  useEffect(() => {
+    engineRef.current?.setRoadSignsEnabled(roadSignsEnabled);
+    try {
+      localStorage.setItem("streetrove.roadSigns", String(roadSignsEnabled));
+    } catch {
+      // The switch still works when browser storage is unavailable.
+    }
+  }, [roadSignsEnabled, engineReady]);
 
   useEffect(() => {
     engineRef.current?.setInputPreferences(inputPreferences);
@@ -373,6 +389,15 @@ export function WorldWorkspace({
           </button>
         </div>
         <div className="mode-switch" role="group" aria-label="World mode">
+          <button
+            aria-pressed={roadSignsEnabled}
+            className={roadSignsEnabled ? "active" : ""}
+            onClick={() => setRoadSignsEnabled((enabled) => !enabled)}
+            disabled={!engineReady}
+            title="Show road names at intersections"
+          >
+            Road signs
+          </button>
           <button
             disabled={!engineReady}
             onClick={() => {

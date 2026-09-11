@@ -34,6 +34,7 @@ import { vehicleMapPose, type VehicleMapPose } from "./driveMapPose.js";
 import { WorldBuilderClient } from "./worldBuilder.js";
 import { TerrainRuntime } from "./terrainRuntime.js";
 import { createBuildingVisual } from "./buildingVisual.js";
+import { createRoadSigns, disposeRoadSigns } from "./roadSigns.js";
 import {
   loadVehicleModel,
   disposeVehicleModel,
@@ -225,6 +226,8 @@ export class WorldEngine {
   private readonly chunkGroups = new Map<string, THREE.Group>();
   private readonly chunkBodies = new Map<string, RAPIER.RigidBody[]>();
   private legacyGround: THREE.Mesh | undefined;
+  private roadSigns: THREE.Group | undefined;
+  private roadSignsEnabled = false;
   private legacyGroundBody: RAPIER.RigidBody | undefined;
   private readonly chassis: RAPIER.RigidBody;
   private readonly vehicle: RAPIER.DynamicRayCastVehicleController;
@@ -314,6 +317,15 @@ export class WorldEngine {
     if (!open && this.mode === "drive") this.renderer.domElement.focus();
   }
 
+  setRoadSignsEnabled(enabled: boolean): void {
+    this.roadSignsEnabled = enabled;
+    if (enabled && !this.roadSigns) {
+      this.roadSigns = createRoadSigns(this.plan);
+      this.scene.add(this.roadSigns);
+    }
+    if (this.roadSigns) this.roadSigns.visible = enabled;
+  }
+
   async setVehicle(choice: VehicleChoice): Promise<void> {
     const revision = ++this.vehicleLoadRevision;
     const model = await loadVehicleModel(choice);
@@ -400,6 +412,9 @@ export class WorldEngine {
     );
     this.definition = definition;
     this.plan = result.plan;
+    if (this.roadSigns) disposeRoadSigns(this.roadSigns);
+    this.roadSigns = undefined;
+    this.setRoadSignsEnabled(this.roadSignsEnabled);
     this.removeLegacyGround();
     if (!this.plan.terrain) {
       this.buildGround();
@@ -443,6 +458,7 @@ export class WorldEngine {
   }
 
   dispose(): void {
+    if (this.roadSigns) disposeRoadSigns(this.roadSigns);
     this.scene.remove(this.vehicleVisual.root);
     disposeVehicleModel(this.vehicleVisual.root);
     this.disposed = true;

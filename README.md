@@ -43,6 +43,9 @@ intentionally want to remove local projects and cached source data.
 - Cancelable Web Worker generation into deterministic 256 m chunks
 - Joined road strips, layer-aware intersections/end caps, and provenance
 - Three.js inspect mode and fixed-step Rapier ray-cast vehicle driving
+- Optional **Road signs** toggle in the 3D toolbar: road-name boards at
+  intersections in Inspect and Drive, off by default and remembered in this
+  browser. Names come from OSM; unnamed roads have no invented labels.
 - Shared Three.js/Rapier heightfields, drivable road strips, bridge decks,
   tunnel open cuts, and elevation-aware vehicle spawn/recovery
 - Keyboard and standard-gamepad controls with safe-pose recovery
