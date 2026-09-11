@@ -1232,3 +1232,95 @@ button:disabled {
   font-size: 0.78rem;
   line-height: 1.5;
 }
+.building-editor {
+  width: min(350px, calc(100vw - 36px));
+}
+.building-editor h2 {
+  margin: 0 0 12px;
+}
+.building-editor label {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+.building-editor select,
+.building-editor input:not([type="checkbox"]) {
+  width: 100%;
+  min-width: 0;
+}
+.building-editor input[type="color"] {
+  height: 32px;
+}
+.building-editor fieldset {
+  border: 1px solid #64796b;
+  border-radius: 8px;
+  margin: 12px 0;
+  padding: 10px;
+  min-width: 0;
+}
+.building-editor legend {
+  font-size: 12px;
+  padding: 0 5px;
+}
+.building-editor button {
+  font-size: 12px;
+  padding: 7px 9px;
+  margin: 3px 0;
+}
+.building-editor button[aria-pressed="true"] {
+  background: #e8f0dc;
+  color: #193b2b;
+}
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.building-editor .editor-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.editor-status {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #f4d397;
+}
+.building-editor small {
+  color: #c1cfbf;
+}
+.building-editor select,
+.building-editor input[type="number"] {
+  background: #213b2e;
+  color: #f1f5ec;
+  border: 1px solid #708574;
+  border-radius: 6px;
+  padding: 7px;
+  font: inherit;
+}
+.building-editor button {
+  border: 1px solid #657e6b;
+  border-radius: 6px;
+  color: #eef4e9;
+  background: #365241;
+  cursor: pointer;
+}
+.building-editor button:hover:not(:disabled) {
+  background: #496c55;
+}
+.building-editor button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.editor-savebar {
+  position: sticky;
+  top: -18px;
+  z-index: 2;
+  background: #293e2c;
+  padding: 8px 0;
+  border-bottom: 1px solid #61735f;
+}
+.editor-savebar .editor-status {
+  margin: 5px 0;
+}

@@ -192,6 +192,14 @@ function surfaceMaterial(
 export function createBuildingVisual(
   building: BuildingPlan,
   colorful = false,
+  manualPanels: {
+    x: number;
+    z: number;
+    kind: string;
+    width: number;
+    height: number;
+    sill: number;
+  }[] = [],
 ): THREE.Group | undefined {
   if ((building.rings[0]?.length ?? 0) < 4) return undefined;
   const { positions, planes, appearance } = roofSurface(building);
@@ -283,13 +291,18 @@ export function createBuildingVisual(
         for (let bay = 0; bay < bays; bay++) {
           const center = (length * (bay + 0.5)) / bays;
           const door =
-            floor === 0 && i === 0 && bay === 0 && appearance.residential;
+            floor === 0 &&
+            i === 0 &&
+            bay === 0 &&
+            appearance.residential &&
+            !manualPanels.some((panel) => panel.kind === "front-door");
           const garage =
             floor === 0 &&
             i === 0 &&
             bay === bays - 1 &&
             bays >= 3 &&
-            appearance.residential;
+            appearance.residential &&
+            !manualPanels.some((panel) => panel.kind === "garage");
           const width = garage ? 2.4 : door ? 0.95 : 1.25;
           const height = door || garage ? 2.15 : 1.3;
           const y =
@@ -297,6 +310,25 @@ export function createBuildingVisual(
               ? height / 2
               : floor * (appearance.eaves / floors) + 1.8;
           if (y + height / 2 > appearance.eaves - 0.15) continue;
+          if (
+            manualPanels.some((panel) => {
+              const along =
+                ((panel.x - a.x) * (b.x - a.x) +
+                  (panel.z - a.z) * (b.z - a.z)) /
+                length;
+              const across =
+                Math.abs(
+                  (panel.x - a.x) * (b.z - a.z) - (panel.z - a.z) * (b.x - a.x),
+                ) / length;
+              return (
+                across < 0.2 &&
+                Math.abs(along - center) < (panel.width + width) / 2 + 0.15 &&
+                y + height / 2 > panel.sill &&
+                y - height / 2 < panel.sill + panel.height
+              );
+            })
+          )
+            continue;
           quad(center, y, width + 0.18, height + 0.18, "#e5ddd0", 0.035);
           quad(
             center,

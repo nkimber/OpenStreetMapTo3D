@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { BuildingCustomizationSchema } from "./customizations.js";
+export * from "./customizations.js";
 
 export const Wgs84PositionSchema = z.object({
   longitude: z.number().min(-180).max(180),
@@ -305,5 +307,3 @@ export const ApiErrorSchema = z.object({
 });
 
 export type ApiError = z.infer<typeof ApiErrorSchema>;
-import { BuildingCustomizationSchema } from "./customizations.js";
-export * from "./customizations.js";

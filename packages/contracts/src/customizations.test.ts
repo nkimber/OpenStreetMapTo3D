@@ -75,4 +75,19 @@ describe("reusable building customizations", () => {
         .success,
     ).toBe(false);
   });
+  it("rejects overlapping openings even when a wall is reversed", () => {
+    const value = draft();
+    value.openings.push({
+      ...value.openings[0]!,
+      id: "front",
+      kind: "front-door",
+      wall: [
+        ...value.openings[0]!.wall,
+      ].reverse() as (typeof value.openings)[0]["wall"],
+    });
+    expect(validateBuildingOpenings(geometry, value)).toMatch(/overlap/);
+    value.openings[1]!.kind = "window";
+    value.openings[1]!.sill = 3;
+    expect(validateBuildingOpenings(geometry, value)).toBeUndefined();
+  });
 });

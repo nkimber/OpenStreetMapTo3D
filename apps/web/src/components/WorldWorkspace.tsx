@@ -13,6 +13,7 @@ import {
 import { api } from "../api.js";
 import { DriveMiniMap } from "./DriveMiniMap.js";
 import { Garage } from "./Garage.js";
+import { BuildingEditor } from "./BuildingEditor.js";
 import {
   savedVehicleChoice,
   vehicleStorageKey,
@@ -88,6 +89,7 @@ export function WorldWorkspace({
   const updateAbortRef = useRef<AbortController | undefined>(undefined);
   const [mode, setMode] = useState<EngineMode>("inspect");
   const [garageOpen, setGarageOpen] = useState(false);
+  const [editDirty, setEditDirty] = useState(false);
   const [roadSignsEnabled, setRoadSignsEnabled] = useState(() => {
     try {
       return localStorage.getItem("streetrove.roadSigns") === "true";
@@ -366,6 +368,12 @@ export function WorldWorkspace({
         <button
           className="icon-button"
           onClick={onExit}
+          disabled={editDirty}
+          title={
+            editDirty
+              ? "Save or discard building edits before leaving"
+              : "Return to world setup"
+          }
           aria-label="Return to world setup"
         >
           ←
@@ -377,18 +385,25 @@ export function WorldWorkspace({
         <div className="edit-history" role="group" aria-label="Edit history">
           <button
             onClick={() => void undo()}
-            disabled={!undoStack.length || saving}
+            disabled={!undoStack.length || saving || mode === "edit"}
           >
             ↶ Undo
           </button>
           <button
             onClick={() => void redo()}
-            disabled={!redoStack.length || saving}
+            disabled={!redoStack.length || saving || mode === "edit"}
           >
             Redo ↷
           </button>
         </div>
         <div className="mode-switch" role="group" aria-label="World mode">
+          <button
+            className={mode === "edit" ? "active" : ""}
+            disabled={!engineReady || rebuilding}
+            onClick={() => setMode("edit")}
+          >
+            Edit
+          </button>
           <button
             aria-pressed={roadSignsEnabled}
             className={roadSignsEnabled ? "active" : ""}
@@ -409,6 +424,7 @@ export function WorldWorkspace({
           </button>
           <button
             className={mode === "inspect" ? "active" : ""}
+            disabled={editDirty}
             onClick={() => setMode("inspect")}
           >
             Inspect
@@ -416,7 +432,7 @@ export function WorldWorkspace({
           <button
             className={mode === "drive" ? "active" : ""}
             onClick={() => setMode("drive")}
-            disabled={!hasRoads || !engineReady}
+            disabled={!hasRoads || !engineReady || editDirty}
           >
             Drive
           </button>
@@ -585,6 +601,13 @@ export function WorldWorkspace({
             pose={stats.vehicleMapPose}
           />
         </>
+      ) : mode === "edit" && engineReady && engineRef.current ? (
+        <BuildingEditor
+          definition={definition}
+          engine={engineRef.current}
+          onDefinitionChange={onDefinitionChange}
+          onDirtyChange={setEditDirty}
+        />
       ) : (
         <aside className="inspector glass-panel">
           <p className="eyebrow">Inspector</p>

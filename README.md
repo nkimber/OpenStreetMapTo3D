@@ -50,6 +50,11 @@ intentionally want to remove local projects and cached source data.
   tunnel open cuts, and elevation-aware vehicle spawn/recovery
 - Keyboard and standard-gamepad controls with safe-pose recovery
 - Persistent height, width, visibility, and exact road-spawn overrides
+- Building **Edit** mode with wall-attached front doors, 1/2/3-car garage doors,
+  windows, roof/finish/colors, automatic editable driveways and entrance paths,
+  and draggable fences, gates and garden boundaries. Saved customizations follow
+  the same OSM building across worlds and imports. See the
+  [building editor guide](documents/building-customizations.md).
 - Undo/redo and affected-chunk-only rebuilds in the live editor
 - Build hash, worker timing, frame, triangle, recovery, and diagnostic telemetry
 - Saved/recent worlds with visible OpenStreetMap and elevation attribution

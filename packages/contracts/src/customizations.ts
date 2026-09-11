@@ -133,5 +133,32 @@ export function validateBuildingOpenings(
     if (opening.fraction < margin || opening.fraction > 1 - margin)
       return "The door or window does not fit on this wall. Choose a wider wall or a smaller opening.";
   }
+  for (let i = 0; i < value.openings.length; i++) {
+    const a = value.openings[i]!;
+    for (const b of value.openings.slice(i + 1)) {
+      const same =
+        key(a.wall[0]) === key(b.wall[0]) && key(a.wall[1]) === key(b.wall[1]);
+      const reversed =
+        key(a.wall[0]) === key(b.wall[1]) && key(a.wall[1]) === key(b.wall[0]);
+      if (!same && !reversed) continue;
+      const length = Math.hypot(
+        (a.wall[1][0] - a.wall[0][0]) *
+          111320 *
+          Math.cos((a.wall[0][1] * Math.PI) / 180),
+        (a.wall[1][1] - a.wall[0][1]) * 111320,
+      );
+      const sillA = a.kind === "window" ? a.sill : 0,
+        sillB = b.kind === "window" ? b.sill : 0;
+      const height = (kind: string) =>
+        kind === "window" ? 1.3 : kind === "garage" ? 2.3 : 2.1;
+      if (
+        Math.abs(a.fraction - (same ? b.fraction : 1 - b.fraction)) * length <
+          (openingWidth(a) + openingWidth(b)) / 2 + 0.1 &&
+        sillA < sillB + height(b.kind) &&
+        sillB < sillA + height(a.kind)
+      )
+        return "Doors and windows must not overlap. Move an opening along its wall.";
+    }
+  }
   return undefined;
 }

@@ -1,9 +1,11 @@
 import RAPIER from "@dimforge/rapier3d-compat";
 import type {
+  BuildingCustomization,
   Diagnostic,
   WorldBuildProgress,
   WorldDefinition,
 } from "@osm3d/contracts";
+import { footprintSignature } from "@osm3d/contracts";
 import { wgs84ToLocal } from "@osm3d/geo";
 import {
   defaultVehicleConfig,
@@ -34,6 +36,12 @@ import { vehicleMapPose, type VehicleMapPose } from "./driveMapPose.js";
 import { WorldBuilderClient } from "./worldBuilder.js";
 import { TerrainRuntime } from "./terrainRuntime.js";
 import { createBuildingVisual } from "./buildingVisual.js";
+import { hasCustomization, openingOnBuilding } from "./buildingEdits.js";
+import {
+  customizedPlan,
+  createCustomizationVisual,
+  openingPanels,
+} from "./buildingEditVisuals.js";
 import { createRoadSigns, disposeRoadSigns } from "./roadSigns.js";
 import {
   loadVehicleModel,
@@ -90,7 +98,17 @@ export interface DefinitionUpdateResult {
   durationMs: number;
 }
 
-export type EngineMode = "inspect" | "drive";
+export type EngineMode = "inspect" | "edit" | "drive";
+
+export interface EditPointer {
+  phase: "click" | "move" | "end";
+  point: { x: number; y: number; z: number };
+  sourceId?: string;
+  openingId?: string;
+  routeIndex?: number;
+  boundaryId?: string;
+  boundaryIndex?: number;
+}
 
 interface VehicleVisual {
   root: THREE.Group;
@@ -155,7 +173,11 @@ function conformGeometryToTerrain(
 
 function disposeObject(root: THREE.Object3D): void {
   root.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) return;
+    if (
+      !(object instanceof THREE.Mesh) &&
+      !(object instanceof THREE.LineSegments)
+    )
+      return;
     object.geometry.dispose();
     const materials = Array.isArray(object.material)
       ? object.material
@@ -228,6 +250,10 @@ export class WorldEngine {
   private legacyGround: THREE.Mesh | undefined;
   private roadSigns: THREE.Group | undefined;
   private roadSignsEnabled = false;
+  private editPointerHandler: ((event: EditPointer) => void) | undefined;
+  private draggingEdit: EditPointer | undefined;
+  private highlightCustomizations = false;
+  private readonly customizationBodies = new Map<string, RAPIER.RigidBody>();
   private legacyGroundBody: RAPIER.RigidBody | undefined;
   private readonly chassis: RAPIER.RigidBody;
   private readonly vehicle: RAPIER.DynamicRayCastVehicleController;
@@ -291,6 +317,7 @@ export class WorldEngine {
     this.configureScene();
     this.buildGround();
     for (const chunk of this.plan.chunks) this.buildChunk(chunk);
+    this.syncCustomizationPhysics();
     this.buildPhysicsGround();
     for (const chunk of this.plan.chunks) this.buildChunkPhysics(chunk);
     const vehicle = this.createVehicle();
@@ -304,6 +331,15 @@ export class WorldEngine {
     window.addEventListener("keydown", this.keyDown);
     window.addEventListener("keyup", this.keyUp);
     this.renderer.domElement.addEventListener("pointerdown", this.pointerDown);
+    this.renderer.domElement.addEventListener(
+      "pointermove",
+      this.editPointerMove,
+    );
+    this.renderer.domElement.addEventListener("pointerup", this.editPointerUp);
+    this.renderer.domElement.addEventListener(
+      "pointercancel",
+      this.editPointerUp,
+    );
     this.resize();
     this.callbacks.onDiagnostics(this.plan.diagnostics);
     this.emitStats();
@@ -351,9 +387,125 @@ export class WorldEngine {
   setMode(mode: EngineMode): void {
     const previousMode = this.mode;
     this.mode = mode;
-    this.controls.enabled = mode === "inspect";
+    this.controls.enabled = mode !== "drive";
+    this.refreshBuildingVisuals();
     if (mode === "drive") this.renderer.domElement.focus();
     else if (previousMode === "drive") this.frameOverview();
+  }
+
+  getEditContext() {
+    return { plan: this.plan, definition: this.definition };
+  }
+
+  setEditPointerHandler(handler?: (event: EditPointer) => void): void {
+    this.editPointerHandler = handler;
+  }
+
+  setCustomizationPreview(
+    values: BuildingCustomization[],
+    highlight = this.highlightCustomizations,
+  ): void {
+    if (this.disposed) return;
+    const previous = new Map(
+      this.definition.buildingCustomizations?.map((item) => [
+        item.sourceId,
+        item,
+      ]),
+    );
+    const changed = new Set(
+      values
+        .filter(
+          (item) =>
+            deterministicHash(previous.get(item.sourceId) ?? null) !==
+            deterministicHash(item),
+        )
+        .map((item) => item.sourceId),
+    );
+    for (const id of previous.keys())
+      if (!values.some((item) => item.sourceId === id)) changed.add(id);
+    const all = highlight !== this.highlightCustomizations;
+    this.definition = { ...this.definition, buildingCustomizations: values };
+    this.highlightCustomizations = highlight;
+    this.refreshBuildingVisuals(all ? undefined : changed);
+    this.syncCustomizationPhysics(all ? undefined : changed);
+  }
+
+  focusBuilding(sourceId: string): void {
+    const building = this.plan.buildings.find(
+      (item) => item.sourceId === sourceId,
+    );
+    if (!building) return;
+    const ring = building.rings[0]!;
+    const x = ring.reduce((sum, point) => sum + point.x, 0) / ring.length;
+    const z = ring.reduce((sum, point) => sum + point.z, 0) / ring.length;
+    this.controls.target.set(x, building.baseHeight + 2, z);
+    const size = Math.max(
+      15,
+      ...ring.map((point) => Math.hypot(point.x - x, point.z - z) * 2),
+    );
+    this.camera.position.set(
+      x + size,
+      building.baseHeight + size * 0.8,
+      z + size,
+    );
+    this.controls.update();
+  }
+
+  private refreshBuildingVisuals(changed?: Set<string>): void {
+    for (const chunk of this.plan.chunks) {
+      const group = this.chunkGroups.get(chunk.id);
+      if (!group) continue;
+      for (const child of [...group.children]) {
+        if (!child.userData.buildingVisual) continue;
+        if (changed && !changed.has(child.userData.buildingSourceId as string))
+          continue;
+        const index = this.selectable.indexOf(child);
+        if (index >= 0) this.selectable.splice(index, 1);
+        child.removeFromParent();
+        disposeObject(child);
+      }
+      for (const index of chunk.buildingIndexes) {
+        const building = this.plan.buildings[index];
+        if (building && changed && !changed.has(building.sourceId)) continue;
+        const mesh = building && this.createBuildingMesh(building);
+        if (mesh) {
+          group.add(mesh);
+          this.selectable.push(mesh);
+        }
+      }
+    }
+  }
+
+  private syncCustomizationPhysics(changed?: Set<string>): void {
+    for (const [id, body] of this.customizationBodies) {
+      if (changed && !changed.has(id)) continue;
+      this.physics.removeRigidBody(body);
+      this.customizationBodies.delete(id);
+    }
+    for (const group of this.chunkGroups.values()) {
+      for (const building of group.children) {
+        const id = building.userData.buildingSourceId as string | undefined;
+        if (!id || (changed && !changed.has(id))) continue;
+        let body = this.customizationBodies.get(id);
+        building.traverse((object) => {
+          if (!(object instanceof THREE.Mesh) || !object.userData.route) return;
+          const positions = object.geometry.getAttribute("position");
+          if (!positions.count) return;
+          body ??= this.physics.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+          this.physics.createCollider(
+            RAPIER.ColliderDesc.trimesh(
+              new Float32Array(positions.array),
+              Uint32Array.from(
+                { length: positions.count },
+                (_, index) => index,
+              ),
+            ).setFriction(1.1),
+            body,
+          );
+        });
+        if (body) this.customizationBodies.set(id, body);
+      }
+    }
   }
 
   setInputPreferences(preferences: DriveInputPreferences): void {
@@ -430,6 +582,8 @@ export class WorldEngine {
         this.buildChunkPhysics(chunk);
       }
     }
+    this.refreshBuildingVisuals();
+    this.syncCustomizationPhysics();
     if (spawnChanged) {
       this.applyConfiguredSpawn(true);
     }
@@ -472,6 +626,18 @@ export class WorldEngine {
       this.pointerDown,
     );
     this.controls.dispose();
+    this.renderer.domElement.removeEventListener(
+      "pointermove",
+      this.editPointerMove,
+    );
+    this.renderer.domElement.removeEventListener(
+      "pointerup",
+      this.editPointerUp,
+    );
+    this.renderer.domElement.removeEventListener(
+      "pointercancel",
+      this.editPointerUp,
+    );
     disposeObject(this.scene);
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -690,10 +856,53 @@ export class WorldEngine {
   }
 
   private createBuildingMesh(building: BuildingPlan): THREE.Group | undefined {
-    return createBuildingVisual(
-      building,
-      this.definition.world.settings.visualStyle === "colorful",
+    const feature = this.definition.features.find(
+      (item) => item.sourceId === building.sourceId,
     );
+    const saved = this.definition.buildingCustomizations?.find(
+      (item) => item.sourceId === building.sourceId,
+    );
+    const custom =
+      feature && saved?.footprint === footprintSignature(feature.geometry)
+        ? {
+            ...saved,
+            openings: saved.openings.filter((opening) =>
+              openingOnBuilding(opening, building, this.definition),
+            ),
+            boundaries:
+              this.plan.buildings.find(
+                (item) => item.sourceId === building.sourceId,
+              ) === building
+                ? saved.boundaries
+                : [],
+          }
+        : undefined;
+    const updated = customizedPlan(building, custom);
+    const house = createBuildingVisual(
+      updated,
+      this.definition.world.settings.visualStyle === "colorful",
+      openingPanels(custom, this.definition),
+    );
+    if (!house) return undefined;
+    const group = new THREE.Group();
+    group.userData.buildingVisual = true;
+    group.userData.buildingSourceId = building.sourceId;
+    group.add(house);
+    if (custom)
+      group.add(
+        createCustomizationVisual(
+          updated,
+          custom,
+          this.definition,
+          this.plan,
+          this.mode === "edit",
+        ),
+      );
+    if (this.highlightCustomizations && hasCustomization(saved)) {
+      const box = new THREE.BoxHelper(house, custom ? 0x4ce0a1 : 0xffab40);
+      group.add(box);
+    }
+    return group;
   }
 
   private removeChunk(chunkId: string): void {
@@ -946,6 +1155,18 @@ export class WorldEngine {
   };
 
   private readonly pointerDown = (event: PointerEvent): void => {
+    if (this.mode === "edit" && this.editPointerHandler) {
+      const hit = this.editHit(event);
+      if (hit) {
+        if (hit.openingId || hit.boundaryId) {
+          this.draggingEdit = hit;
+          this.controls.enabled = false;
+          this.renderer.domElement.setPointerCapture(event.pointerId);
+        }
+        this.editPointerHandler(hit);
+      }
+      return;
+    }
     if (this.mode !== "inspect") return;
     const bounds = this.renderer.domElement.getBoundingClientRect();
     this.pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
@@ -981,6 +1202,67 @@ export class WorldEngine {
     this.callbacks.onSelect({ sourceId });
   };
 
+  private editHit(
+    event: PointerEvent,
+    dragging = false,
+  ): EditPointer | undefined {
+    const bounds = this.renderer.domElement.getBoundingClientRect();
+    this.pointer.set(
+      ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+      (-(event.clientY - bounds.top) / bounds.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hits = this.raycaster
+      .intersectObjects(this.scene.children, true)
+      .filter(
+        (hit) =>
+          hit.object instanceof THREE.Mesh &&
+          !hit.object.userData.route &&
+          !this.vehicleVisual.root.getObjectById(hit.object.id),
+      );
+    const hit = dragging
+      ? hits.find(
+          (candidate) =>
+            !candidate.object.userData.openingId &&
+            !candidate.object.userData.boundaryId,
+        )
+      : (hits.find(
+          (candidate) =>
+            candidate.object.userData.openingId ||
+            candidate.object.userData.boundaryId,
+        ) ?? hits[0]);
+    if (!hit) return undefined;
+    const data = hit.object.userData;
+    return {
+      phase: "click",
+      point: { x: hit.point.x, y: hit.point.y, z: hit.point.z },
+      sourceId: data.sourceId,
+      openingId: data.openingId,
+      routeIndex: data.routeIndex,
+      boundaryId: data.boundaryId,
+      boundaryIndex: data.boundaryIndex,
+    };
+  }
+
+  private readonly editPointerMove = (event: PointerEvent): void => {
+    if (!this.draggingEdit) return;
+    const hit = this.editHit(event, true);
+    if (hit)
+      this.editPointerHandler?.({
+        ...this.draggingEdit,
+        phase: "move",
+        point: hit.point,
+      });
+  };
+  private readonly editPointerUp = (event: PointerEvent): void => {
+    if (!this.draggingEdit) return;
+    this.editPointerHandler?.({ ...this.draggingEdit, phase: "end" });
+    this.draggingEdit = undefined;
+    this.controls.enabled = this.mode !== "drive";
+    if (this.renderer.domElement.hasPointerCapture(event.pointerId))
+      this.renderer.domElement.releasePointerCapture(event.pointerId);
+  };
+
   private gamepadInput(): VehicleInput | undefined {
     if (!this.inputPreferences.gamepadEnabled || !navigator.getGamepads) return;
     const gamepad = [...navigator.getGamepads()].find(
@@ -999,7 +1281,7 @@ export class WorldEngine {
   }
 
   private targetInput(): VehicleInput {
-    if (this.mode === "inspect" || this.garageOpen) {
+    if (this.mode !== "drive" || this.garageOpen) {
       return {
         throttle: 0,
         brake: 0.75,
@@ -1216,7 +1498,7 @@ export class WorldEngine {
       this.accumulator -= FIXED_STEP;
     }
     this.syncVehicle(deltaSeconds);
-    if (this.mode === "inspect") this.controls.update();
+    if (this.mode !== "drive") this.controls.update();
     this.renderer.render(this.scene, this.camera);
     this.statsElapsed += deltaSeconds;
     this.fpsElapsed += rawDeltaSeconds;
