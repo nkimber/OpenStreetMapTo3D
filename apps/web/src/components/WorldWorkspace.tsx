@@ -12,6 +12,12 @@ import {
 } from "@osm3d/worldgen";
 import { api } from "../api.js";
 import { DriveMiniMap } from "./DriveMiniMap.js";
+import { Garage } from "./Garage.js";
+import {
+  savedVehicleChoice,
+  vehicleStorageKey,
+  type VehicleChoice,
+} from "../engine/vehicleModels.js";
 import {
   WorldEngine,
   type DriveInputPreferences,
@@ -81,6 +87,8 @@ export function WorldWorkspace({
   const initialBuildAbortRef = useRef<AbortController | undefined>(undefined);
   const updateAbortRef = useRef<AbortController | undefined>(undefined);
   const [mode, setMode] = useState<EngineMode>("inspect");
+  const [garageOpen, setGarageOpen] = useState(false);
+  const [vehicleChoice, setVehicleChoice] = useState(savedVehicleChoice);
   const modeRef = useRef(mode);
   modeRef.current = mode;
   const [selection, setSelection] = useState<EngineSelection>({});
@@ -142,6 +150,12 @@ export function WorldWorkspace({
           engine.setMode(modeRef.current);
           engine.setInputPreferences(inputPreferences);
           setEngineReady(true);
+          void engine.setVehicle(savedVehicleChoice()).catch(() => {
+            if (!cancelled)
+              setError(
+                "The car model could not load. The fallback car is available; retry from Garage.",
+              );
+          });
         }
       })
       .catch((reason: unknown) => {
@@ -172,6 +186,22 @@ export function WorldWorkspace({
   useEffect(() => {
     engineRef.current?.setInputPreferences(inputPreferences);
   }, [inputPreferences]);
+
+  const closeGarage = () => {
+    engineRef.current?.setGarageOpen(false);
+    setGarageOpen(false);
+  };
+  const applyVehicle = async (choice: VehicleChoice) => {
+    await engineRef.current?.setVehicle(choice);
+    setVehicleChoice(choice);
+    try {
+      localStorage.setItem(vehicleStorageKey, JSON.stringify(choice));
+    } catch {
+      setError(
+        "Car selected, but this browser could not save your preference.",
+      );
+    }
+  };
 
   useEffect(() => {
     if (!selected) {
@@ -344,6 +374,15 @@ export function WorldWorkspace({
         </div>
         <div className="mode-switch" role="group" aria-label="World mode">
           <button
+            disabled={!engineReady}
+            onClick={() => {
+              engineRef.current?.setGarageOpen(true);
+              setGarageOpen(true);
+            }}
+          >
+            Garage
+          </button>
+          <button
             className={mode === "inspect" ? "active" : ""}
             onClick={() => setMode("inspect")}
           >
@@ -358,6 +397,13 @@ export function WorldWorkspace({
           </button>
         </div>
       </header>
+      {garageOpen && (
+        <Garage
+          choice={vehicleChoice}
+          onApply={applyVehicle}
+          onClose={closeGarage}
+        />
+      )}
 
       {!engineReady && !error && (
         <div className="engine-loading" role="status">
@@ -658,6 +704,13 @@ function FeatureInspector({
         </h2>
       </div>
       <code>{feature.sourceId}</code>
+      {feature.kind === "building" && (
+        <p className="garage-hint">
+          Appearance uses supported OSM roof and material tags. Missing roofs,
+          colors, windows and doors are estimated—not photographs of this
+          property.
+        </p>
+      )}
       {provenance && (
         <p className="provenance">
           Current value: <strong>{provenance}</strong>

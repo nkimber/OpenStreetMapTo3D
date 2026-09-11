@@ -33,6 +33,13 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { vehicleMapPose, type VehicleMapPose } from "./driveMapPose.js";
 import { WorldBuilderClient } from "./worldBuilder.js";
 import { TerrainRuntime } from "./terrainRuntime.js";
+import { createBuildingVisual } from "./buildingVisual.js";
+import {
+  loadVehicleModel,
+  disposeVehicleModel,
+  type VehicleChoice,
+  type ModelVisual,
+} from "./vehicleModels.js";
 
 const FIXED_STEP = 1 / 60;
 
@@ -86,28 +93,7 @@ export type EngineMode = "inspect" | "drive";
 
 interface VehicleVisual {
   root: THREE.Group;
-  wheels: THREE.Mesh[];
-}
-
-function colorFromId(
-  id: string,
-  style: WorldDefinition["world"]["settings"]["visualStyle"],
-): THREE.Color {
-  let hash = 0;
-  for (const character of id) hash = (hash * 31 + character.charCodeAt(0)) | 0;
-  if (style === "night")
-    return new THREE.Color().setHSL(
-      0.58 + (Math.abs(hash) % 12) / 100,
-      0.3,
-      0.3,
-    );
-  if (style === "colorful")
-    return new THREE.Color().setHSL((Math.abs(hash) % 360) / 360, 0.38, 0.62);
-  return new THREE.Color().setHSL(
-    0.08 + (Math.abs(hash) % 14) / 100,
-    0.2,
-    0.68,
-  );
+  wheels: THREE.Object3D[];
 }
 
 function shapeFromRings(rings: LocalPoint2[][]): THREE.Shape | undefined {
@@ -242,7 +228,10 @@ export class WorldEngine {
   private legacyGroundBody: RAPIER.RigidBody | undefined;
   private readonly chassis: RAPIER.RigidBody;
   private readonly vehicle: RAPIER.DynamicRayCastVehicleController;
-  private readonly vehicleVisual: VehicleVisual;
+  private vehicleVisual: VehicleVisual;
+  private loadedVehicle?: ModelVisual;
+  private vehicleLoadRevision = 0;
+  private garageOpen = false;
   private readonly spawnPosition = new THREE.Vector3();
   private readonly spawnRotation = new THREE.Quaternion();
   private readonly safePosition = new THREE.Vector3();
@@ -316,6 +305,35 @@ export class WorldEngine {
     this.callbacks.onDiagnostics(this.plan.diagnostics);
     this.emitStats();
     this.animationFrame = requestAnimationFrame(this.animate);
+  }
+
+  setGarageOpen(open: boolean): void {
+    this.garageOpen = open;
+    this.keys.clear();
+    this.currentInput = { ...neutralVehicleInput };
+    if (!open && this.mode === "drive") this.renderer.domElement.focus();
+  }
+
+  async setVehicle(choice: VehicleChoice): Promise<void> {
+    const revision = ++this.vehicleLoadRevision;
+    const model = await loadVehicleModel(choice);
+    if (this.disposed || revision !== this.vehicleLoadRevision) {
+      disposeVehicleModel(model.root);
+      return;
+    }
+    const previous = this.vehicleVisual.root;
+    model.root.position.copy(previous.position);
+    model.root.quaternion.copy(previous.quaternion);
+    this.scene.remove(previous);
+    disposeVehicleModel(previous);
+    this.vehicleVisual = model;
+    this.loadedVehicle = model;
+    model.connections.forEach((connection, index) =>
+      this.vehicle.setWheelChassisConnectionPointCs(index, connection),
+    );
+    this.scene.add(model.root);
+    this.chassis.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.chassis.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
   setMode(mode: EngineMode): void {
@@ -425,6 +443,8 @@ export class WorldEngine {
   }
 
   dispose(): void {
+    this.scene.remove(this.vehicleVisual.root);
+    disposeVehicleModel(this.vehicleVisual.root);
     this.disposed = true;
     this.builder.dispose();
     cancelAnimationFrame(this.animationFrame);
@@ -465,6 +485,8 @@ export class WorldEngine {
     sun.position.set(-180, 260, 110);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2_048, 2_048);
+    sun.shadow.normalBias = 0.2;
+    sun.shadow.bias = -0.0005;
     sun.shadow.camera.left = -700;
     sun.shadow.camera.right = 700;
     sun.shadow.camera.top = 700;
@@ -651,32 +673,11 @@ export class WorldEngine {
     this.scene.add(group);
   }
 
-  private createBuildingMesh(building: BuildingPlan): THREE.Mesh | undefined {
-    const shape = shapeFromRings(building.rings);
-    if (!shape) return undefined;
-    const geometry = new THREE.ExtrudeGeometry(shape, {
-      depth: building.height,
-      bevelEnabled: false,
-      curveSegments: 1,
-    });
-    geometry.rotateX(-Math.PI / 2);
-    const mesh = new THREE.Mesh(
-      geometry,
-      new THREE.MeshStandardMaterial({
-        color: colorFromId(
-          building.sourceId,
-          this.definition.world.settings.visualStyle,
-        ),
-        roughness: 0.82,
-      }),
+  private createBuildingMesh(building: BuildingPlan): THREE.Group | undefined {
+    return createBuildingVisual(
+      building,
+      this.definition.world.settings.visualStyle === "colorful",
     );
-    mesh.position.y = building.baseHeight + 0.02;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.userData.sourceId = building.sourceId;
-    mesh.userData.featureKind = "building";
-    mesh.userData.heightSource = building.heightSource;
-    return mesh;
   }
 
   private removeChunk(chunkId: string): void {
@@ -908,6 +909,12 @@ export class WorldEngine {
   };
 
   private readonly keyDown = (event: KeyboardEvent): void => {
+    if (
+      this.garageOpen ||
+      (event.target instanceof Element &&
+        event.target.closest("input, select, textarea, dialog"))
+    )
+      return;
     this.keys.add(event.code);
     if (
       ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(
@@ -930,7 +937,7 @@ export class WorldEngine {
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const intersection = this.raycaster.intersectObjects(
       this.selectable,
-      false,
+      true,
     )[0];
     const match = intersection?.object;
     const sourceId =
@@ -976,7 +983,7 @@ export class WorldEngine {
   }
 
   private targetInput(): VehicleInput {
-    if (this.mode === "inspect") {
+    if (this.mode === "inspect" || this.garageOpen) {
       return {
         throttle: 0,
         brake: 0.75,
@@ -1103,8 +1110,18 @@ export class WorldEngine {
     const wheelSpin =
       (this.vehicle.currentVehicleSpeed() * deltaSeconds) /
       defaultVehicleConfig.wheelRadius;
-    for (const wheel of this.vehicleVisual.wheels)
+    this.vehicleVisual.wheels.forEach((wheel, index) => {
+      wheel.rotation.order = "YXZ";
       wheel.rotation.x += wheelSpin;
+      wheel.rotation.y = this.vehicle.wheelSteering(index) ?? 0;
+      const connection = this.loadedVehicle?.connections[index];
+      if (connection)
+        wheel.position.y =
+          connection.y - (this.vehicle.wheelSuspensionLength(index) ?? 0.34);
+    });
+    if (this.loadedVehicle)
+      this.loadedVehicle.brake.value =
+        this.currentInput.brake > 0.2 || this.currentInput.handbrake ? 1 : 0;
     if (this.mode === "drive") {
       const desiredOffset = new THREE.Vector3(0, 3.8, 8.8).applyQuaternion(
         this.vehicleVisual.root.quaternion,
@@ -1166,6 +1183,13 @@ export class WorldEngine {
 
   private readonly animate = (time: number): void => {
     if (this.disposed) return;
+    if (this.garageOpen) {
+      // Keep the world frozen behind the modal instead of rendering two scenes.
+      this.previousTime = time;
+      this.accumulator = 0;
+      this.animationFrame = requestAnimationFrame(this.animate);
+      return;
+    }
     const rawDeltaSeconds = (time - this.previousTime) / 1_000;
     const deltaSeconds = Math.min(rawDeltaSeconds, 0.1);
     if (rawDeltaSeconds > 0.05) this.longFrameCount += 1;

@@ -1133,3 +1133,77 @@ button:disabled {
     display: none;
   }
 }
+/* Native modal provides focus trapping and Escape handling for the garage. */
+.garage {
+  width: min(680px, calc(100vw - 32px));
+  max-height: 90vh;
+  overflow: auto;
+  border: 1px solid #627b84;
+  border-radius: 20px;
+  padding: 24px;
+  background: #13242d;
+  color: #f0f5f6;
+}
+.garage::backdrop {
+  background: #07121bba;
+  backdrop-filter: blur(5px);
+}
+.garage-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.garage-heading h2 {
+  margin: 4px 0 16px;
+}
+.garage-preview {
+  height: 280px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.garage-hint {
+  font-size: 0.85rem;
+  color: #b6c8cc;
+}
+.garage-cars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.garage-cars button[aria-pressed="true"] {
+  background: #297b79;
+  border-color: #79d6cb;
+  color: white;
+}
+.garage-paint {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 20px 0;
+}
+.garage-paint input {
+  width: 64px;
+  height: 36px;
+  padding: 2px;
+}
+.garage a {
+  color: #9ce4dc;
+}
+.garage button {
+  border: 1px solid #627b84;
+  border-radius: 9px;
+  padding: 10px 14px;
+  background: #253d48;
+  color: #f0f5f6;
+  cursor: pointer;
+  font: inherit;
+}
+.garage button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.garage button:focus-visible {
+  outline: 3px solid #92e4d9;
+  outline-offset: 3px;
+}

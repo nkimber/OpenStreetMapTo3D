@@ -38,7 +38,7 @@ export type {
   TerrainRoadProfile,
 } from "./terrain.js";
 
-export const WORLD_GENERATOR_VERSION = "0.5.0";
+export const WORLD_GENERATOR_VERSION = "0.6.0";
 export const DEFAULT_CHUNK_SIZE_METERS = 256;
 export const DEFAULT_TERRAIN_CELLS_PER_CHUNK = 64;
 
@@ -91,6 +91,7 @@ export interface BuildingPlan {
   baseHeight: number;
   rings: LocalPoint2[][];
   buildingType?: string;
+  appearanceTags?: Record<string, string>;
 }
 
 export interface LandPlan {
@@ -969,6 +970,14 @@ export function buildWorldPlan(
           sourceId: feature.sourceId,
           height: height.height,
           heightSource: height.source,
+          appearanceTags: Object.fromEntries(
+            Object.entries(feature.tags).filter(
+              ([key]) =>
+                key.startsWith("roof:") ||
+                key === "building:material" ||
+                key === "building:colour",
+            ),
+          ),
           baseHeight,
           rings,
           ...(feature.tags.building

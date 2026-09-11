@@ -13,6 +13,12 @@ through generation, editing, driving, and reopening the persisted result.
 
 Implemented capabilities:
 
+- Garage with three locally bundled CC0 cars, body paint, persistent device
+  preferences, animated wheels and vehicle lighting; safe modal pause and
+  load-failure fallback
+- Footprint-preserving procedural roofs, wall/shingle patterns and nearby-only
+  windows/doors, with supported OSM appearance tags and explicit estimation labels
+  (see [graphics details and limits](graphics-and-garage.md))
 - Explicit Nominatim search, direct coordinate entry, and movable MapLibre area
   selection
 - Offline fixture and live bounded Overpass imports

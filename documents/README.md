@@ -24,6 +24,8 @@ MVP from later roadmap items.
 
 ## Engineering
 
+- [Garage and neighborhood graphics](graphics-and-garage.md) covers CC0 cars,
+  saved vehicle choices, procedural house details and appearance limitations.
 - [Technical architecture](technical-architecture.md) describes containers,
   runtime boundaries, packages, and system-level invariants.
 - [OpenStreetMap data pipeline](openstreetmap-data-pipeline.md) covers
