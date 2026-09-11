@@ -1,5 +1,6 @@
 import type {
   GeocodeResult,
+  BuildingCustomization,
   ImportJob,
   ImportRequest,
   SnapshotPreview,
@@ -44,6 +45,15 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  async saveBuildingCustomization(
+    id: string,
+    value: BuildingCustomization,
+  ): Promise<BuildingCustomization> {
+    return apiFetch(`/worlds/${id}/building-customization`, {
+      method: "PUT",
+      body: JSON.stringify(value),
+    });
+  },
   async ready(): Promise<boolean> {
     try {
       await apiFetch("/ready");

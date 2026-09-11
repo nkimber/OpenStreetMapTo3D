@@ -88,6 +88,17 @@ CREATE TABLE IF NOT EXISTS world_overrides (
 CREATE INDEX IF NOT EXISTS world_overrides_world_idx
   ON world_overrides (world_project_id);
 
+-- Shared across worlds and snapshots from the same source. Reset is a versioned
+-- tombstone so stale editors cannot restore deleted customizations silently.
+CREATE TABLE IF NOT EXISTS building_customizations (
+  provider text NOT NULL,
+  source_id text NOT NULL,
+  revision integer NOT NULL,
+  payload jsonb,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (provider, source_id)
+);
+
 CREATE TABLE IF NOT EXISTS world_builds (
   id uuid PRIMARY KEY,
   world_project_id uuid NOT NULL REFERENCES world_projects(id) ON DELETE CASCADE,

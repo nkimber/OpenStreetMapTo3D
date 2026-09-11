@@ -8,6 +8,9 @@ import {
   ImportRequestSchema,
   WorldCreateRequestSchema,
   WorldOverrideSchema,
+  BuildingCustomizationSchema,
+  footprintSignature,
+  validateBuildingOpenings,
 } from "@osm3d/contracts";
 import { boundsAreaSquareKm, selectionMatchesBounds } from "@osm3d/geo";
 import { z, ZodError } from "zod";
@@ -15,6 +18,7 @@ import type { AppConfig } from "./config.js";
 import type { DatabasePool } from "./database.js";
 import { createImportJob, executeImportJob, getImportJob } from "./imports.js";
 import { geocode } from "./providers.js";
+import { saveCustomization } from "./customizations.js";
 import {
   createWorld,
   getSnapshotPreview,
@@ -204,6 +208,52 @@ export async function buildApp({
         error: { code: "WORLD_NOT_FOUND", message: "World not found." },
       });
     return { overrides: await replaceOverrides(pool, id, body.overrides) };
+  });
+
+  app.put("/api/worlds/:id/building-customization", async (request, reply) => {
+    const { id } = UuidParamSchema.parse(request.params);
+    const value = BuildingCustomizationSchema.parse(request.body);
+    const definition = await getWorldDefinition(pool, id);
+    const feature = definition?.features.find(
+      (item) => item.kind === "building" && item.sourceId === value.sourceId,
+    );
+    if (!definition || !feature)
+      return reply.code(404).send({
+        error: {
+          code: "BUILDING_NOT_FOUND",
+          message: "Building not found in this world.",
+        },
+      });
+    if (
+      value.footprint &&
+      value.footprint !== footprintSignature(feature.geometry)
+    )
+      return reply.code(409).send({
+        error: {
+          code: "FOOTPRINT_CHANGED",
+          message:
+            "The building footprint changed. Review the placement before saving.",
+        },
+      });
+    const invalid = validateBuildingOpenings(feature.geometry, value);
+    if (invalid)
+      return reply
+        .code(400)
+        .send({ error: { code: "INVALID_PLACEMENT", message: invalid } });
+    const saved = await saveCustomization(
+      pool,
+      definition.world.snapshotId,
+      value,
+    );
+    if (!saved)
+      return reply.code(409).send({
+        error: {
+          code: "EDIT_CONFLICT",
+          message:
+            "This building was edited elsewhere. Reload its saved changes before saving again.",
+        },
+      });
+    return saved;
   });
 
   if (config.NODE_ENV === "production") {

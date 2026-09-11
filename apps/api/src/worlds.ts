@@ -11,6 +11,7 @@ import type {
 import { ElevationSnapshotSchema } from "@osm3d/contracts";
 import { selectionRing } from "@osm3d/geo";
 import type { DatabasePool } from "./database.js";
+import { loadCustomizations } from "./customizations.js";
 
 const GENERATOR_VERSION = "0.5.0";
 
@@ -297,6 +298,7 @@ export async function getWorldDefinition(
     ...(elevation ? { elevation } : {}),
     features,
     overrides,
+    buildingCustomizations: await loadCustomizations(pool, world.snapshotId),
     diagnostics: [
       ...features.flatMap((feature) => feature.warnings),
       ...elevationDiagnostics(elevation),

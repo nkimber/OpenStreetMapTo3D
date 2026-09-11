@@ -271,6 +271,7 @@ export const WorldDefinitionSchema = z.object({
   elevation: ElevationSnapshotSchema.optional(),
   features: z.array(NormalizedFeatureSchema),
   overrides: z.array(WorldOverrideSchema),
+  buildingCustomizations: z.array(BuildingCustomizationSchema).optional(),
   diagnostics: z.array(DiagnosticSchema),
 });
 
@@ -304,3 +305,5 @@ export const ApiErrorSchema = z.object({
 });
 
 export type ApiError = z.infer<typeof ApiErrorSchema>;
+import { BuildingCustomizationSchema } from "./customizations.js";
+export * from "./customizations.js";
