@@ -828,6 +828,15 @@ export function WorldWorkspace({
                       ? `Finished ${ordinal(stats.race.position)}`
                       : `${ordinal(stats.race.position)} of 4`}
                   </strong>
+                  {stats.race.positionChange && (
+                    <span className="race-position-change">
+                      {stats.race.positionChange.to <
+                      stats.race.positionChange.from
+                        ? "Position gained"
+                        : "Position lost"}{" "}
+                      {ordinal(stats.race.positionChange.to)}
+                    </span>
+                  )}
                   <span>{formatRaceTime(stats.race.elapsedSeconds)}</span>
                   <span>
                     {Math.min(
@@ -836,12 +845,36 @@ export function WorldWorkspace({
                     ).toFixed(0)}{" "}
                     / {stats.race.lengthMeters.toFixed(0)} m
                   </span>
+                  {stats.race.laps > 1 && (
+                    <span>
+                      Lap {stats.race.currentLap}/{stats.race.laps}
+                    </span>
+                  )}
+                  {stats.race.lastSplitDelta !== undefined && (
+                    <span
+                      className={
+                        stats.race.lastSplitDelta <= 0
+                          ? "race-split ahead"
+                          : "race-split behind"
+                      }
+                    >
+                      Split {stats.race.lastSplitDelta > 0 ? "+" : ""}
+                      {stats.race.lastSplitDelta.toFixed(1)}s
+                    </span>
+                  )}
+                  {stats.race.draftBoost > 0.02 && (
+                    <span className="race-draft">Draft boost</span>
+                  )}
                   <small>
                     {stats.race.courseKind === "loop"
                       ? "Loop course"
-                      : "Out and back"}
+                      : "Out and back"}{" "}
+                    · {stats.race.difficulty}
                   </small>
                 </>
+              )}
+              {stats.race.warning && (
+                <strong className="race-warning">{stats.race.warning}</strong>
               )}
             </section>
           )}

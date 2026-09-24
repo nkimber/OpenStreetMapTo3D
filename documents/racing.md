@@ -10,4 +10,16 @@ Every candidate reports total and per-lap length, turn count, ascent, maximum gr
 
 ## Race runtime
 
-The current race uses a checkered grid, three-light countdown, four physics vehicles, checkpoint arches, turn arrows, minimap overlays, and position/time/progress HUD. Rival vehicles match the selected player model with different paint and yield when another racer blocks their lane. The following sections will track richer race rules, AI strategy, feedback, and results as those increments land.
+The current race uses a checkered grid, three-light countdown, four physics vehicles, checkpoint arches, turn arrows, minimap overlays, and position/time/progress HUD. Rival vehicles match the selected player model with different paint, apply distinct driving personalities, plan overtakes on sufficiently wide roads, recover when stuck, and yield when another racer blocks their lane. Race integrity checks cover false starts, missed checkpoints, wrong-way driving, off-course recovery, lap counting, split timing, and finish order.
+
+## Rival intelligence and handling
+
+The three named rivals use cautious, balanced, and aggressive profiles layered over Casual, Competitive, or Expert difficulty. They look ahead through upcoming road curvature, brake before turns, select a passing side on wider roads, return toward the center after an overtake, steer away from close side contact, draft a car ahead, and receive a capped catch-up power adjustment when substantially behind. Steering mistakes are small, deterministic, and reduced at higher difficulty. A rival that remains stalled or overturned for three seconds is returned just behind its route progress.
+
+Drafting also gives the player a capped 12% power benefit when closely aligned behind a rival. Collision yielding remains authoritative at close range, so drafting and overtaking never intentionally apply engine force through another vehicle.
+
+The sedan is the balanced baseline. The sport hatchback accelerates and steers more sharply, while the SUV is slower with stronger braking and more heavily damped suspension. The selected profile applies equally to the player and same-model rivals.
+
+## Race rules
+
+The start grid physically holds every car through the countdown and reports an attempted false start. Route direction and separation are checked continuously: sustained reverse travel shows a wrong-way warning, missed arches must be driven through, and a player who stays well off course for four seconds is returned to the last completed checkpoint. Checkpoint split times compare against rivals that have already crossed, multi-lap progress is explicit, position changes are announced, and finish order is deterministic from recorded finish times and remaining route progress.

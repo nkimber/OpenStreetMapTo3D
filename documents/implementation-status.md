@@ -68,6 +68,14 @@ Implemented capabilities:
 - Pre-race director with 1/3/5 km targets, scored route alternatives, course
   preview, difficulty selection, multi-lap expansion, unsuitable-road filtering,
   route regeneration and optional unused-junction closure barriers
+- Named cautious/balanced/aggressive rivals with difficulty profiles,
+  look-ahead corner braking, lane-based overtaking, side-contact avoidance,
+  drafting, capped catch-up assistance and stuck/rollover recovery
+- Race integrity for held false starts, wrong-way and missed-checkpoint warnings,
+  timed off-course recovery, reliable directional finish crossing, checkpoint
+  splits, lap tracking and deterministic standings
+- Distinct sedan, sport-hatchback and SUV acceleration, speed, steering,
+  braking and suspension profiles
 - More forgiving cornering from longer, firmer-damped suspension, a modestly
   lowered mass center and speed-sensitive steering, without forced-upright
   stabilization

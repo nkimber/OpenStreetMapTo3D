@@ -4,6 +4,7 @@ import {
   defaultVehicleChoice,
   parseVehicleChoice,
   rivalVehicleChoices,
+  vehicleHandling,
   vehicles,
 } from "./vehicleModels.js";
 
@@ -27,6 +28,19 @@ describe("vehicle catalog", () => {
     expect(choices.every((choice) => choice.id === "suv")).toBe(true);
     expect(new Set(choices.map((choice) => choice.color)).size).toBe(3);
     expect(choices.some((choice) => choice.color === "#2f8fea")).toBe(false);
+  });
+  it("gives the garage models distinct but bounded handling", () => {
+    const sedan = vehicleHandling("sedan");
+    const hatch = vehicleHandling("hatchback-sports");
+    const suv = vehicleHandling("suv");
+    expect(hatch.engineForceMultiplier).toBeGreaterThan(
+      sedan.engineForceMultiplier,
+    );
+    expect(hatch.steeringMultiplier).toBeGreaterThan(sedan.steeringMultiplier);
+    expect(suv.maxSpeedMultiplier).toBeLessThan(sedan.maxSpeedMultiplier);
+    expect(suv.suspensionDampingMultiplier).toBeGreaterThan(
+      sedan.suspensionDampingMultiplier,
+    );
   });
   for (const vehicle of vehicles)
     it(`${vehicle.id} is a local GLB with four named drive wheels`, () => {

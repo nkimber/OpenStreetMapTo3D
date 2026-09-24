@@ -61,7 +61,9 @@ import {
   loadVehicleModel,
   disposeVehicleModel,
   rivalVehicleChoices,
+  vehicleHandling as vehicleHandlingProfile,
   type VehicleChoice,
+  type VehicleHandling,
   type ModelVisual,
 } from "./vehicleModels.js";
 
@@ -102,8 +104,31 @@ export interface RaceStats {
   progressMeters: number;
   lengthMeters: number;
   courseKind: RaceCourse["kind"];
+  difficulty: RaceDifficulty;
+  currentLap: number;
+  laps: number;
+  draftBoost: number;
+  splitTimes: number[];
+  lastSplitDelta?: number;
+  warning?: string;
+  positionChange?: { from: number; to: number };
+  results?: RaceResult[];
   route: Array<[number, number]>;
-  rivals: VehicleMapPose[];
+  rivals: RaceRivalStats[];
+}
+
+export interface RaceRivalStats extends VehicleMapPose {
+  name: string;
+  color: string;
+}
+
+export interface RaceResult {
+  position: number;
+  name: string;
+  color: string;
+  player: boolean;
+  finished: boolean;
+  timeSeconds?: number;
 }
 
 export interface EngineStats {
@@ -177,6 +202,23 @@ interface RaceVehicle {
   input: VehicleInput;
   progress: number;
   skill: number;
+  name: string;
+  color: string;
+  personality: RivalPersonality;
+  laneOffset: number;
+  targetLaneOffset: number;
+  stuckSeconds: number;
+  powerMultiplier: number;
+  checkpointTimes: number[];
+  finishTime?: number;
+}
+
+interface RivalPersonality {
+  style: "cautious" | "balanced" | "aggressive";
+  speedFactor: number;
+  brakingMargin: number;
+  passingBias: number;
+  mistakeAmount: number;
 }
 
 interface GridPose {
@@ -194,9 +236,53 @@ interface RaceSession {
   playerProgress: number;
   checkpointIndex: number;
   finishPosition: number;
+  difficulty: RaceDifficulty;
+  warning?: string;
+  notice?: { text: string; expiresAt: number };
+  wrongWaySeconds: number;
+  offCourseSeconds: number;
+  falseStart: boolean;
+  splitTimes: number[];
+  lastSplitDelta?: number;
+  previousPosition: number;
+  positionChange?: { from: number; to: number; expiresAt: number };
+  playerFinishTime?: number;
   gridPoses: GridPose[];
   rivals: RaceVehicle[];
 }
+
+const difficultyProfiles: Record<
+  RaceDifficulty,
+  { skill: number; catchUp: number; mistakeScale: number }
+> = {
+  casual: { skill: 0.86, catchUp: 0.025, mistakeScale: 1.25 },
+  competitive: { skill: 0.97, catchUp: 0.055, mistakeScale: 0.7 },
+  expert: { skill: 1.06, catchUp: 0.075, mistakeScale: 0.35 },
+};
+
+const rivalPersonalities: RivalPersonality[] = [
+  {
+    style: "aggressive",
+    speedFactor: 1.04,
+    brakingMargin: 0.9,
+    passingBias: 1,
+    mistakeAmount: 0.025,
+  },
+  {
+    style: "balanced",
+    speedFactor: 1,
+    brakingMargin: 1,
+    passingBias: -1,
+    mistakeAmount: 0.018,
+  },
+  {
+    style: "cautious",
+    speedFactor: 0.94,
+    brakingMargin: 1.16,
+    passingBias: 1,
+    mistakeAmount: 0.012,
+  },
+];
 
 const wheelConnections = [
   { x: -0.92, y: -0.36, z: -1.42 },
@@ -391,6 +477,7 @@ export class WorldEngine {
   private vehicleVisual: VehicleVisual;
   private loadedVehicle?: ModelVisual;
   private vehicleChoice: VehicleChoice = { ...defaultVehicleChoice };
+  private vehicleHandling = vehicleHandlingProfile(defaultVehicleChoice.id);
   private vehicleLoadRevision = 0;
   private raceLoadRevision = 0;
   private garageOpen = false;
@@ -521,9 +608,27 @@ export class WorldEngine {
     this.vehicleVisual = model;
     this.loadedVehicle = model;
     this.vehicleChoice = { ...choice };
+    this.vehicleHandling = vehicleHandlingProfile(choice.id);
     model.connections.forEach((connection, index) =>
       this.vehicle.setWheelChassisConnectionPointCs(index, connection),
     );
+    for (let index = 0; index < 4; index += 1) {
+      this.vehicle.setWheelSuspensionStiffness(
+        index,
+        defaultVehicleConfig.suspensionStiffness *
+          this.vehicleHandling.suspensionStiffnessMultiplier,
+      );
+      this.vehicle.setWheelSuspensionCompression(
+        index,
+        defaultVehicleConfig.suspensionCompression *
+          this.vehicleHandling.suspensionDampingMultiplier,
+      );
+      this.vehicle.setWheelSuspensionRelaxation(
+        index,
+        defaultVehicleConfig.suspensionRelaxation *
+          this.vehicleHandling.suspensionDampingMultiplier,
+      );
+    }
     this.scene.add(model.root);
     this.chassis.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.chassis.setAngvel({ x: 0, y: 0, z: 0 }, true);
@@ -822,8 +927,9 @@ export class WorldEngine {
     if (!course)
       return `This road network cannot support the selected ${((options.targetLength ?? 1_000) / 1_000).toFixed(0)} km race.`;
 
+    const rivalChoices = rivalVehicleChoices(this.vehicleChoice);
     const modelResults = await Promise.allSettled(
-      rivalVehicleChoices(this.vehicleChoice).map(loadVehicleModel),
+      rivalChoices.map(loadVehicleModel),
     );
     const models: ModelVisual[] = [];
     let modelLoadFailed = false;
@@ -853,10 +959,19 @@ export class WorldEngine {
     this.placeRigidBody(this.chassis, playerPose);
     this.safePosition.copy(playerPose.position);
     this.safeRotation.copy(playerPose.rotation);
+    const difficulty = options.difficulty ?? "competitive";
+    const difficultyProfile = difficultyProfiles[difficulty];
     const skills = [0.88, 0.82, 0.76];
     const rivals = models.map((model, index) => {
       const pose = gridPoses[index + 1]!;
-      const rival = this.createRaceVehicle(pose, model, skills[index]!);
+      const rival = this.createRaceVehicle(
+        pose,
+        model,
+        skills[index]! * difficultyProfile.skill,
+        ["Apex", "Nova", "Mako"][index]!,
+        rivalChoices[index]!.color,
+        rivalPersonalities[index]!,
+      );
       this.scene.add(rival.visual.root);
       return rival;
     });
@@ -871,6 +986,12 @@ export class WorldEngine {
       playerProgress: 0,
       checkpointIndex: 0,
       finishPosition: 1,
+      difficulty,
+      wrongWaySeconds: 0,
+      offCourseSeconds: 0,
+      falseStart: false,
+      splitTimes: [],
+      previousPosition: 1,
       gridPoses,
       rivals,
     };
@@ -1362,6 +1483,7 @@ export class WorldEngine {
     position: THREE.Vector3,
     rotation: THREE.Quaternion,
     visual: VehicleVisual,
+    handling: VehicleHandling = this.vehicleHandling,
   ): {
     chassis: RAPIER.RigidBody;
     controller: RAPIER.DynamicRayCastVehicleController;
@@ -1376,7 +1498,7 @@ export class WorldEngine {
     const [halfX, halfY, halfZ] = defaultVehicleConfig.chassisHalfExtents;
     this.physics.createCollider(
       RAPIER.ColliderDesc.cuboid(halfX, halfY, halfZ)
-        .setTranslation(0, defaultVehicleConfig.chassisCenterOfMassOffsetY, 0)
+        .setTranslation(0, handling.centerOfMassOffsetY, 0)
         .setMass(defaultVehicleConfig.chassisMass)
         .setFriction(0.6),
       chassis,
@@ -1394,15 +1516,18 @@ export class WorldEngine {
       );
       controller.setWheelSuspensionStiffness(
         index,
-        defaultVehicleConfig.suspensionStiffness,
+        defaultVehicleConfig.suspensionStiffness *
+          handling.suspensionStiffnessMultiplier,
       );
       controller.setWheelSuspensionCompression(
         index,
-        defaultVehicleConfig.suspensionCompression,
+        defaultVehicleConfig.suspensionCompression *
+          handling.suspensionDampingMultiplier,
       );
       controller.setWheelSuspensionRelaxation(
         index,
-        defaultVehicleConfig.suspensionRelaxation,
+        defaultVehicleConfig.suspensionRelaxation *
+          handling.suspensionDampingMultiplier,
       );
       controller.setWheelMaxSuspensionForce(
         index,
@@ -1418,11 +1543,15 @@ export class WorldEngine {
     pose: GridPose,
     model: ModelVisual,
     skill: number,
+    name: string,
+    color: string,
+    personality: RivalPersonality,
   ): RaceVehicle {
     const vehicle = this.createPhysicsVehicle(
       pose.position,
       pose.rotation,
       model,
+      this.vehicleHandling,
     );
     model.connections.forEach((connection, index) =>
       vehicle.controller.setWheelChassisConnectionPointCs(index, connection),
@@ -1433,6 +1562,14 @@ export class WorldEngine {
       input: { ...neutralVehicleInput },
       progress: 0,
       skill,
+      name,
+      color,
+      personality,
+      laneOffset: 0,
+      targetLaneOffset: 0,
+      stuckSeconds: 0,
+      powerMultiplier: 1,
+      checkpointTimes: [],
     };
   }
 
@@ -1477,6 +1614,52 @@ export class WorldEngine {
     body.setRotation(pose.rotation, true);
     body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  }
+
+  private racePoseAt(
+    course: RaceCourse,
+    distance: number,
+    laneOffset = 0,
+  ): GridPose {
+    const point = sampleRaceRoute(course, distance);
+    const direction = this.courseDirection(course, distance);
+    const right = new THREE.Vector3(-direction.z, 0, direction.x);
+    const nearby = sampleRaceRoute(
+      course,
+      Math.min(course.length, distance + 3),
+    );
+    const pitch = Math.atan2(
+      nearby.y - point.y,
+      Math.hypot(nearby.x - point.x, nearby.z - point.z),
+    );
+    return {
+      position: new THREE.Vector3(
+        point.x + right.x * laneOffset,
+        point.y + 1.4,
+        point.z + right.z * laneOffset,
+      ),
+      rotation: new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          pitch,
+          Math.atan2(-direction.x, -direction.z),
+          0,
+          "YXZ",
+        ),
+      ),
+    };
+  }
+
+  private recoverRival(race: RaceSession, rival: RaceVehicle): void {
+    this.placeRigidBody(
+      rival.chassis,
+      this.racePoseAt(
+        race.course,
+        Math.max(0, rival.progress - 7),
+        rival.laneOffset,
+      ),
+    );
+    rival.input = { ...neutralVehicleInput };
+    rival.stuckSeconds = 0;
   }
 
   private readonly resize = (): void => {
@@ -1661,8 +1844,12 @@ export class WorldEngine {
     return {
       throttle: forward ? 1 : reverse ? -0.65 : 0,
       brake:
-        !forward && !reverse && Math.abs(this.vehicle.currentVehicleSpeed()) > 1
-          ? 0.08
+        !forward &&
+        !reverse &&
+        Math.abs(this.vehicle.currentVehicleSpeed()) > 0.15
+          ? this.race
+            ? 0.22
+            : 0.08
           : 0,
       steering:
         (left ? 1 : right ? -1 : 0) * this.inputPreferences.steeringSensitivity,
@@ -1676,7 +1863,12 @@ export class WorldEngine {
       this.targetInput(),
       FIXED_STEP,
     );
-    this.applyVehicleInput(this.vehicle, this.currentInput);
+    this.applyVehicleInput(
+      this.vehicle,
+      this.currentInput,
+      this.vehicleHandling,
+      1 + (this.race ? this.raceDraftBoost(this.race) : 0),
+    );
     if (this.race) {
       for (const rival of this.race.rivals) {
         const target =
@@ -1687,7 +1879,12 @@ export class WorldEngine {
           target.brake >= 0.95 && target.throttle === 0
             ? { ...target }
             : smoothVehicleInput(rival.input, target, FIXED_STEP);
-        this.applyVehicleInput(rival.controller, rival.input);
+        this.applyVehicleInput(
+          rival.controller,
+          rival.input,
+          this.vehicleHandling,
+          rival.powerMultiplier,
+        );
       }
     }
     this.physics.step();
@@ -1698,20 +1895,41 @@ export class WorldEngine {
   private applyVehicleInput(
     vehicle: RAPIER.DynamicRayCastVehicleController,
     input: VehicleInput,
+    handling = this.vehicleHandling,
+    powerMultiplier = 1,
   ): void {
     const engineForce = speedLimitedEngineForce(
       input.throttle,
       vehicle.currentVehicleSpeed() * 3.6,
+      {
+        engineForce:
+          defaultVehicleConfig.engineForce *
+          handling.engineForceMultiplier *
+          powerMultiplier,
+        maxForwardSpeedKph:
+          defaultVehicleConfig.maxForwardSpeedKph * handling.maxSpeedMultiplier,
+        maxReverseSpeedKph:
+          defaultVehicleConfig.maxReverseSpeedKph * handling.maxSpeedMultiplier,
+      },
     );
     const steering = speedAdjustedSteeringAngle(
       input.steering,
       vehicle.currentVehicleSpeed() * 3.6,
+      {
+        maxSteeringAngle:
+          defaultVehicleConfig.maxSteeringAngle * handling.steeringMultiplier,
+        maxForwardSpeedKph:
+          defaultVehicleConfig.maxForwardSpeedKph * handling.maxSpeedMultiplier,
+        highSpeedSteeringFactor: defaultVehicleConfig.highSpeedSteeringFactor,
+      },
     );
     for (const wheel of [0, 1]) {
       vehicle.setWheelSteering(wheel, steering);
       vehicle.setWheelBrake(
         wheel,
-        input.brake * defaultVehicleConfig.brakeForce,
+        input.brake *
+          defaultVehicleConfig.brakeForce *
+          handling.brakeMultiplier,
       );
     }
     for (const wheel of [2, 3]) {
@@ -1719,41 +1937,74 @@ export class WorldEngine {
       vehicle.setWheelBrake(
         wheel,
         input.handbrake
-          ? defaultVehicleConfig.handbrakeForce
-          : input.brake * defaultVehicleConfig.brakeForce,
+          ? defaultVehicleConfig.handbrakeForce * handling.brakeMultiplier
+          : input.brake *
+              defaultVehicleConfig.brakeForce *
+              handling.brakeMultiplier,
       );
     }
     vehicle.updateVehicle(FIXED_STEP, RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC);
   }
 
+  private courseDirection(course: RaceCourse, distance: number): THREE.Vector3 {
+    const before = sampleRaceRoute(course, Math.max(0, distance - 2));
+    const after = sampleRaceRoute(
+      course,
+      Math.min(course.length, distance + 2),
+    );
+    return new THREE.Vector3(
+      after.x - before.x,
+      0,
+      after.z - before.z,
+    ).normalize();
+  }
+
+  private raceDraftBoost(race: RaceSession): number {
+    if (race.phase !== "racing") return 0;
+    const position = this.chassis.translation();
+    const rotation = this.chassis.rotation();
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(
+      new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
+    );
+    const right = new THREE.Vector3(-forward.z, 0, forward.x);
+    for (const rival of race.rivals) {
+      const other = rival.chassis.translation();
+      const offset = new THREE.Vector3(
+        other.x - position.x,
+        0,
+        other.z - position.z,
+      );
+      const longitudinal = offset.dot(forward);
+      if (
+        longitudinal > 5 &&
+        longitudinal < 18 &&
+        Math.abs(offset.dot(right)) < 2.1
+      )
+        return 0.12 * (1 - (longitudinal - 5) / 20);
+    }
+    return 0;
+  }
+
   private raceAiInput(race: RaceSession, rival: RaceVehicle): VehicleInput {
     const position = rival.chassis.translation();
     rival.progress = nearestRaceProgress(race.course, position, rival.progress);
+    while (
+      rival.checkpointTimes.length < race.course.checkpointDistances.length &&
+      rival.progress >=
+        race.course.checkpointDistances[rival.checkpointTimes.length]!
+    )
+      rival.checkpointTimes.push(race.elapsedSeconds);
+    if (!rival.finishTime && rival.progress >= race.course.length - 3)
+      rival.finishTime = race.elapsedSeconds;
     const speedKph = Math.abs(rival.controller.currentVehicleSpeed()) * 3.6;
-    const lookAhead = 10 + Math.min(14, speedKph * 0.16);
-    const target = sampleRaceRoute(
-      race.course,
-      Math.min(race.course.length, rival.progress + lookAhead),
-    );
     const rotation = rival.chassis.rotation();
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(
       new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
     );
-    const desired = new THREE.Vector3(
-      target.x - position.x,
-      0,
-      target.z - position.z,
-    ).normalize();
-    const cross = forward.z * desired.x - forward.x * desired.z;
-    const dot = Math.max(
-      -1,
-      Math.min(1, forward.x * desired.x + forward.z * desired.z),
-    );
-    const angle = Math.atan2(cross, dot);
-    const steering = Math.max(-1, Math.min(1, angle * 1.55));
-    const targetSpeed =
-      (24 + (1 - Math.min(1, Math.abs(angle))) * 42) * rival.skill;
+    const right = new THREE.Vector3(-forward.z, 0, forward.x);
     let proximityBrake = 0;
+    let nearestBlock = Number.POSITIVE_INFINITY;
+    let avoidanceSteer = 0;
     for (const other of [
       this.chassis,
       ...race.rivals
@@ -1761,30 +2012,120 @@ export class WorldEngine {
         .map((candidate) => candidate.chassis),
     ]) {
       const otherPosition = other.translation();
+      const offsetX = otherPosition.x - position.x;
+      const offsetZ = otherPosition.z - position.z;
+      const longitudinal = offsetX * forward.x + offsetZ * forward.z;
+      const lateral = offsetX * right.x + offsetZ * right.z;
+      if (longitudinal > 0 && longitudinal < 18 && Math.abs(lateral) < 2.6)
+        nearestBlock = Math.min(nearestBlock, longitudinal);
+      if (Math.abs(longitudinal) < 5 && Math.abs(lateral) < 3 && lateral !== 0)
+        avoidanceSteer += lateral > 0 ? 0.32 : -0.32;
       proximityBrake = Math.max(
         proximityBrake,
         racerProximityBrake({
           forwardX: forward.x,
           forwardZ: forward.z,
-          offsetX: otherPosition.x - position.x,
-          offsetZ: otherPosition.z - position.z,
+          offsetX,
+          offsetZ,
         }),
       );
     }
-    const routeBrake = speedKph > targetSpeed + 5 ? 0.55 : 0;
+    const laneLimit = Math.max(
+      0,
+      Math.min(2.25, race.course.roadWidth / 2 - 1.1),
+    );
+    if (nearestBlock < 15 && race.course.roadWidth >= 6.5 && laneLimit >= 1.8)
+      rival.targetLaneOffset = laneLimit * rival.personality.passingBias;
+    else if (nearestBlock === Number.POSITIVE_INFINITY)
+      rival.targetLaneOffset *= 0.985;
+    rival.laneOffset += Math.max(
+      -0.035,
+      Math.min(0.035, rival.targetLaneOffset - rival.laneOffset),
+    );
+
+    const lookAhead = 10 + Math.min(16, speedKph * 0.17);
+    const targetDistance = Math.min(
+      race.course.length,
+      rival.progress + lookAhead,
+    );
+    const target = sampleRaceRoute(race.course, targetDistance);
+    const routeDirection = this.courseDirection(race.course, targetDistance);
+    const routeRight = new THREE.Vector3(
+      -routeDirection.z,
+      0,
+      routeDirection.x,
+    );
+    const desired = new THREE.Vector3(
+      target.x + routeRight.x * rival.laneOffset - position.x,
+      0,
+      target.z + routeRight.z * rival.laneOffset - position.z,
+    ).normalize();
+    const cross = forward.z * desired.x - forward.x * desired.z;
+    const dot = Math.max(
+      -1,
+      Math.min(1, forward.x * desired.x + forward.z * desired.z),
+    );
+    const angle = Math.atan2(cross, dot);
+    const laterDirection = this.courseDirection(
+      race.course,
+      Math.min(race.course.length, rival.progress + lookAhead + 28),
+    );
+    const cornerAngle = Math.abs(
+      Math.atan2(
+        routeDirection.z * laterDirection.x -
+          routeDirection.x * laterDirection.z,
+        routeDirection.x * laterDirection.x +
+          routeDirection.z * laterDirection.z,
+      ),
+    );
+    const difficulty = difficultyProfiles[race.difficulty];
+    const mistake =
+      Math.sin(race.elapsedSeconds * 0.73 + rival.name.charCodeAt(0)) *
+      rival.personality.mistakeAmount *
+      difficulty.mistakeScale;
+    const steering = Math.max(
+      -1,
+      Math.min(1, angle * 1.55 + avoidanceSteer + mistake),
+    );
+    const cornerFactor = Math.max(0.2, 1 - cornerAngle / (Math.PI * 0.62));
+    const targetSpeed =
+      (22 + cornerFactor * 46) * rival.skill * rival.personality.speedFactor;
+    if (Math.abs(rival.laneOffset) > 1.65 && nearestBlock > 7)
+      proximityBrake *= 0.35;
+    const leaderProgress = Math.max(
+      race.playerProgress,
+      ...race.rivals.map((candidate) => candidate.progress),
+    );
+    const gap = Math.max(0, leaderProgress - rival.progress - 30);
+    const catchUp = Math.min(
+      difficulty.catchUp,
+      (gap / 500) * difficulty.catchUp,
+    );
+    const draft = nearestBlock > 6 && nearestBlock < 18 ? 0.045 : 0;
+    rival.powerMultiplier = 1 + catchUp + draft;
+    const routeBrake =
+      speedKph > targetSpeed + 4 / rival.personality.brakingMargin ? 0.62 : 0;
     return {
       throttle:
         proximityBrake > 0.05 ? 0 : speedKph < targetSpeed ? rival.skill : 0,
       brake: Math.max(routeBrake, proximityBrake),
       steering,
       handbrake:
-        proximityBrake === 0 && Math.abs(angle) > 1.15 && speedKph > 28,
+        proximityBrake >= 0.8
+          ? true
+          : proximityBrake === 0 && Math.abs(angle) > 1.15 && speedKph > 28,
     };
   }
 
   private advanceRace(race: RaceSession): void {
     if (race.phase === "countdown") {
       race.countdownElapsed += FIXED_STEP;
+      race.falseStart ||=
+        this.keys.has("KeyW") ||
+        this.keys.has("ArrowUp") ||
+        this.keys.has("KeyS") ||
+        this.keys.has("ArrowDown");
+      if (race.falseStart) race.warning = "False start held until green";
       race.countdownLights = Math.min(3, Math.floor(race.countdownElapsed) + 1);
       this.placeRigidBody(this.chassis, race.gridPoses[0]!);
       race.rivals.forEach((rival, index) =>
@@ -1793,12 +2134,14 @@ export class WorldEngine {
       if (race.countdownElapsed >= RACE_COUNTDOWN_SECONDS) {
         race.phase = "racing";
         race.countdownLights = 0;
+        delete race.warning;
         this.currentInput = { ...neutralVehicleInput };
         for (const rival of race.rivals)
           rival.input = { ...neutralVehicleInput };
       }
     } else if (race.phase === "racing") {
       race.elapsedSeconds += FIXED_STEP;
+      delete race.warning;
       const position = this.chassis.translation();
       race.playerProgress = nearestRaceProgress(
         race.course,
@@ -1813,17 +2156,117 @@ export class WorldEngine {
           position.x - checkpoint.x,
           position.z - checkpoint.z,
         );
+        const isFinish =
+          race.checkpointIndex === race.course.checkpointDistances.length - 1;
+        const playerRotation = this.chassis.rotation();
+        const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(
+          new THREE.Quaternion(
+            playerRotation.x,
+            playerRotation.y,
+            playerRotation.z,
+            playerRotation.w,
+          ),
+        );
+        const routeDirection = this.courseDirection(
+          race.course,
+          Math.min(race.course.length - 0.1, checkpointDistance),
+        );
+        const crossedInRaceDirection = playerForward.dot(routeDirection) > 0.05;
         if (
           race.playerProgress >= checkpointDistance - 12 &&
-          separation <= Math.max(3.5, race.course.roadWidth * 0.62)
-        )
+          separation <= Math.max(3.5, race.course.roadWidth * 0.62) &&
+          (!isFinish || crossedInRaceDirection)
+        ) {
+          race.splitTimes.push(race.elapsedSeconds);
+          const rivalSplit = Math.min(
+            ...race.rivals.flatMap((rival) => {
+              const time = rival.checkpointTimes[race.checkpointIndex];
+              return time === undefined ? [] : [time];
+            }),
+          );
+          if (Number.isFinite(rivalSplit))
+            race.lastSplitDelta = race.elapsedSeconds - rivalSplit;
           race.checkpointIndex += 1;
+        } else if (!isFinish && race.playerProgress > checkpointDistance + 28)
+          race.warning = "Checkpoint missed — turn back through the arch";
+      }
+
+      const routePoint = sampleRaceRoute(race.course, race.playerProgress);
+      const routeSeparation = Math.hypot(
+        position.x - routePoint.x,
+        position.z - routePoint.z,
+      );
+      const playerRotation = this.chassis.rotation();
+      const playerForward = new THREE.Vector3(0, 0, -1).applyQuaternion(
+        new THREE.Quaternion(
+          playerRotation.x,
+          playerRotation.y,
+          playerRotation.z,
+          playerRotation.w,
+        ),
+      );
+      const routeDirection = this.courseDirection(
+        race.course,
+        race.playerProgress,
+      );
+      const speedKph = Math.abs(this.vehicle.currentVehicleSpeed()) * 3.6;
+      race.wrongWaySeconds =
+        speedKph > 6 && playerForward.dot(routeDirection) < -0.35
+          ? race.wrongWaySeconds + FIXED_STEP
+          : Math.max(0, race.wrongWaySeconds - FIXED_STEP * 2);
+      if (race.wrongWaySeconds > 0.8) race.warning = "Wrong way";
+      race.offCourseSeconds =
+        routeSeparation > Math.max(8, race.course.roadWidth * 1.35)
+          ? race.offCourseSeconds + FIXED_STEP
+          : Math.max(0, race.offCourseSeconds - FIXED_STEP * 2);
+      if (race.offCourseSeconds > 1)
+        race.warning = "Off course — return to the route";
+      if (race.offCourseSeconds > 4) {
+        const recoveryDistance = Math.max(
+          0,
+          (race.course.checkpointDistances[race.checkpointIndex - 1] ?? 0) - 6,
+        );
+        race.playerProgress = recoveryDistance;
+        this.placeRigidBody(
+          this.chassis,
+          this.racePoseAt(race.course, recoveryDistance),
+        );
+        this.currentInput = { ...neutralVehicleInput };
+        race.offCourseSeconds = 0;
+        race.notice = {
+          text: "Returned to the last checkpoint",
+          expiresAt: race.elapsedSeconds + 2.5,
+        };
+      }
+
+      for (const rival of race.rivals) {
+        const rivalSpeed =
+          Math.abs(rival.controller.currentVehicleSpeed()) * 3.6;
+        const rotation = rival.chassis.rotation();
+        const upright =
+          1 - 2 * (rotation.x * rotation.x + rotation.z * rotation.z);
+        rival.stuckSeconds =
+          (rivalSpeed < 2 && rival.input.throttle > 0.25) || upright < 0.25
+            ? rival.stuckSeconds + FIXED_STEP
+            : Math.max(0, rival.stuckSeconds - FIXED_STEP * 2);
+        if (rival.stuckSeconds > 3) this.recoverRival(race, rival);
+      }
+
+      const positionNow = this.racePosition(race);
+      if (positionNow !== race.previousPosition) {
+        race.positionChange = {
+          from: race.previousPosition,
+          to: positionNow,
+          expiresAt: race.elapsedSeconds + 2.2,
+        };
+        race.previousPosition = positionNow;
       }
       if (
         race.checkpointIndex >= race.course.checkpointDistances.length &&
         race.elapsedSeconds > 5
       ) {
         race.finishPosition = this.racePosition(race);
+        race.playerFinishTime = race.elapsedSeconds;
         race.phase = "finished";
       }
     }
@@ -1840,6 +2283,39 @@ export class WorldEngine {
       1 +
       race.rivals.filter((rival) => rival.progress > race.playerProgress).length
     );
+  }
+
+  private raceResults(race: RaceSession): RaceResult[] {
+    const entries = [
+      {
+        name: "You",
+        color: this.vehicleChoice.color,
+        player: true,
+        progress: race.playerProgress,
+        time: race.playerFinishTime,
+      },
+      ...race.rivals.map((rival) => ({
+        name: rival.name,
+        color: rival.color,
+        player: false,
+        progress: rival.progress,
+        time: rival.finishTime,
+      })),
+    ].sort((left, right) => {
+      if (left.time !== undefined && right.time !== undefined)
+        return left.time - right.time;
+      if (left.time !== undefined) return -1;
+      if (right.time !== undefined) return 1;
+      return right.progress - left.progress;
+    });
+    return entries.map((entry, index) => ({
+      position: index + 1,
+      name: entry.name,
+      color: entry.color,
+      player: entry.player,
+      finished: entry.time !== undefined,
+      ...(entry.time !== undefined ? { timeSeconds: entry.time } : {}),
+    }));
   }
 
   private updateSafeVehicleState(deltaSeconds: number): void {
@@ -1965,13 +2441,23 @@ export class WorldEngine {
 
   private raceStats(race: RaceSession): RaceStats {
     const route = this.raceRouteCoordinates(race.course);
-    const rivals = race.rivals.map((rival) =>
-      vehicleMapPose(
+    const rivals = race.rivals.map((rival) => ({
+      ...vehicleMapPose(
         rival.chassis.translation(),
         rival.chassis.rotation(),
         this.definition.world.anchor,
       ),
-    );
+      name: rival.name,
+      color: rival.color,
+    }));
+    const notice =
+      race.notice && race.notice.expiresAt > race.elapsedSeconds
+        ? race.notice.text
+        : undefined;
+    const positionChange =
+      race.positionChange && race.positionChange.expiresAt > race.elapsedSeconds
+        ? { from: race.positionChange.from, to: race.positionChange.to }
+        : undefined;
     return {
       phase: race.phase,
       countdownLights: race.countdownLights,
@@ -1983,6 +2469,20 @@ export class WorldEngine {
       progressMeters: race.playerProgress,
       lengthMeters: race.course.length,
       courseKind: race.course.kind,
+      difficulty: race.difficulty,
+      currentLap: Math.min(
+        race.course.laps,
+        Math.floor(race.playerProgress / race.course.lapLength) + 1,
+      ),
+      laps: race.course.laps,
+      draftBoost: this.raceDraftBoost(race),
+      splitTimes: race.splitTimes,
+      ...(race.lastSplitDelta !== undefined
+        ? { lastSplitDelta: race.lastSplitDelta }
+        : {}),
+      ...(notice || race.warning ? { warning: notice ?? race.warning } : {}),
+      ...(positionChange ? { positionChange } : {}),
+      ...(race.phase === "finished" ? { results: this.raceResults(race) } : {}),
       route,
       rivals,
     };

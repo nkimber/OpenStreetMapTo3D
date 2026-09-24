@@ -23,6 +23,15 @@ export interface VehicleChoice {
   id: string;
   color: string;
 }
+export interface VehicleHandling {
+  engineForceMultiplier: number;
+  maxSpeedMultiplier: number;
+  steeringMultiplier: number;
+  brakeMultiplier: number;
+  suspensionStiffnessMultiplier: number;
+  suspensionDampingMultiplier: number;
+  centerOfMassOffsetY: number;
+}
 export const defaultVehicleChoice: VehicleChoice = {
   id: "sedan",
   color: "#e87939",
@@ -34,6 +43,38 @@ export function rivalVehicleChoices(choice: VehicleChoice): VehicleChoice[] {
     .filter((color) => color.toLowerCase() !== choice.color.toLowerCase())
     .slice(0, 3)
     .map((color) => ({ id: choice.id, color }));
+}
+
+export function vehicleHandling(vehicleId: string): VehicleHandling {
+  if (vehicleId === "hatchback-sports")
+    return {
+      engineForceMultiplier: 1.1,
+      maxSpeedMultiplier: 1.05,
+      steeringMultiplier: 1.08,
+      brakeMultiplier: 1.04,
+      suspensionStiffnessMultiplier: 1.08,
+      suspensionDampingMultiplier: 1.06,
+      centerOfMassOffsetY: -0.18,
+    };
+  if (vehicleId === "suv")
+    return {
+      engineForceMultiplier: 0.94,
+      maxSpeedMultiplier: 0.94,
+      steeringMultiplier: 0.91,
+      brakeMultiplier: 1.08,
+      suspensionStiffnessMultiplier: 1.12,
+      suspensionDampingMultiplier: 1.15,
+      centerOfMassOffsetY: -0.2,
+    };
+  return {
+    engineForceMultiplier: 1,
+    maxSpeedMultiplier: 1,
+    steeringMultiplier: 1,
+    brakeMultiplier: 1,
+    suspensionStiffnessMultiplier: 1,
+    suspensionDampingMultiplier: 1,
+    centerOfMassOffsetY: defaultVehicleConfig.chassisCenterOfMassOffsetY,
+  };
 }
 export function parseVehicleChoice(value: string | null): VehicleChoice {
   try {

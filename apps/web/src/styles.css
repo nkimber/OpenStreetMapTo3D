@@ -1082,8 +1082,36 @@ button:disabled {
   align-items: center;
   justify-content: center;
   gap: 14px;
+  flex-wrap: wrap;
   padding: 11px 16px;
   transform: translateX(-50%);
+}
+.race-position-change,
+.race-draft,
+.race-split {
+  border-radius: 999px;
+  padding: 4px 7px;
+  font-weight: 800;
+}
+.race-position-change {
+  color: #132f27 !important;
+  background: #7ce6c8;
+}
+.race-draft {
+  color: #192740 !important;
+  background: #8ac9ff;
+}
+.race-split.ahead {
+  color: #8cf2d5 !important;
+}
+.race-split.behind {
+  color: #ffb897 !important;
+}
+.race-warning {
+  flex-basis: 100%;
+  color: #ffcf67 !important;
+  text-align: center;
+  text-transform: uppercase;
 }
 .race-hud strong {
   color: white;
@@ -1160,6 +1188,17 @@ button:disabled {
   transition:
     width 180ms ease,
     height 180ms ease;
+}
+.drive-minimap-rival-label {
+  border-bottom: 3px solid #ffcc32;
+  border-radius: 5px;
+  padding: 2px 4px;
+  color: #18211d;
+  background: rgba(248, 250, 245, 0.9);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
 }
 .drive-minimap.collapsed {
   width: 48px;

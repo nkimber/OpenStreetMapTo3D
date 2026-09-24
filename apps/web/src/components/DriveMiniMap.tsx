@@ -127,7 +127,7 @@ function localMapStyle(
         filter: ["==", ["get", "kind"], "rival"],
         paint: {
           "circle-radius": 5,
-          "circle-color": "#ffcc32",
+          "circle-color": ["coalesce", ["get", "color"], "#ffcc32"],
           "circle-stroke-color": "#20242b",
           "circle-stroke-width": 1.5,
         },
@@ -171,7 +171,12 @@ function raceFeatureCollection(
         : []),
       ...(race?.rivals ?? []).map((rival, index) => ({
         type: "Feature" as const,
-        properties: { kind: "rival", index },
+        properties: {
+          kind: "rival",
+          index,
+          name: rival.name,
+          color: rival.color,
+        },
         geometry: {
           type: "Point" as const,
           coordinates: [rival.longitude, rival.latitude],
@@ -189,6 +194,7 @@ export function DriveMiniMap({
 }: DriveMiniMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const rivalMarkersRef = useRef<maplibregl.Marker[]>([]);
   const featuresRef = useRef(features);
   featuresRef.current = features;
   const raceRef = useRef(race);
@@ -228,6 +234,8 @@ export function DriveMiniMap({
     });
     mapRef.current = map;
     return () => {
+      rivalMarkersRef.current.forEach((marker) => marker.remove());
+      rivalMarkersRef.current = [];
       map.remove();
       mapRef.current = null;
     };
@@ -243,6 +251,23 @@ export function DriveMiniMap({
     const source = mapRef.current?.getSource(raceSourceId) as
       GeoJSONSource | undefined;
     source?.setData(raceFeatureCollection(race, previewRoute));
+    rivalMarkersRef.current.forEach((marker) => marker.remove());
+    rivalMarkersRef.current = [];
+    const map = mapRef.current;
+    if (!map || !race) return;
+    rivalMarkersRef.current = race.rivals.map((rival) => {
+      const element = document.createElement("div");
+      element.className = "drive-minimap-rival-label";
+      element.textContent = rival.name;
+      element.style.borderColor = rival.color;
+      return new maplibregl.Marker({
+        element,
+        anchor: "bottom",
+        offset: [0, -8],
+      })
+        .setLngLat([rival.longitude, rival.latitude])
+        .addTo(map);
+    });
   }, [previewRoute, race]);
 
   useEffect(() => {
