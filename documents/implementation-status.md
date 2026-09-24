@@ -112,7 +112,9 @@ those operational scenarios.
 - Bridges have inferred raised decks, but explicit `ele`, `height`, and endpoint
   structure metadata are not yet fully interpreted. Tunnels are open cuts rather
   than closed overhangs because Rapier heightfields cannot represent caves.
-- Building collision uses bounding boxes and generated roofs are flat.
+- Building collision uses fixed meshes extruded from the actual footprint, so
+  concavities and courtyard holes remain open. Roof collision uses the overall
+  building height rather than the rendered roof slopes.
 - The Worker returns serializable geometry plans. Three.js buffer upload and
   Rapier object creation still occur on the main thread.
 - Progress stages are coarse and cancellation restarts a build rather than

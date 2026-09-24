@@ -36,6 +36,7 @@ import { vehicleMapPose, type VehicleMapPose } from "./driveMapPose.js";
 import { WorldBuilderClient } from "./worldBuilder.js";
 import { TerrainRuntime } from "./terrainRuntime.js";
 import { createBuildingVisual } from "./buildingVisual.js";
+import { buildingCollider } from "./buildingPhysics.js";
 import { hasCustomization, openingOnBuilding } from "./buildingEdits.js";
 import {
   customizedPlan,
@@ -975,31 +976,17 @@ export class WorldEngine {
     if (this.definition.world.settings.buildingCollisions) {
       for (const index of chunk.buildingIndexes) {
         const building = this.plan.buildings[index];
-        const outer = building?.rings[0];
-        if (!building || !outer || outer.length === 0) continue;
-        const xs = outer.map((point) => point.x);
-        const zs = outer.map((point) => point.z);
-        const minX = Math.min(...xs);
-        const maxX = Math.max(...xs);
-        const minZ = Math.min(...zs);
-        const maxZ = Math.max(...zs);
-        const halfX = Math.max(0.2, (maxX - minX) / 2);
-        const halfZ = Math.max(0.2, (maxZ - minZ) / 2);
+        if (!building) continue;
+        const collider = buildingCollider(building);
+        if (!collider) continue;
         const body = this.physics.createRigidBody(
           RAPIER.RigidBodyDesc.fixed().setTranslation(
-            (minX + maxX) / 2,
-            building.baseHeight + building.height / 2,
-            (minZ + maxZ) / 2,
+            0,
+            building.baseHeight,
+            0,
           ),
         );
-        this.physics.createCollider(
-          RAPIER.ColliderDesc.cuboid(
-            halfX,
-            building.height / 2,
-            halfZ,
-          ).setFriction(0.8),
-          body,
-        );
+        this.physics.createCollider(collider, body);
         bodies.push(body);
       }
     }
