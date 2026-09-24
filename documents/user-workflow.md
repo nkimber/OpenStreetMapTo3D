@@ -142,6 +142,21 @@ Drive mode displays speed, safe-reset and spawn-return controls, gamepad and
 steering settings, a chase camera, and OpenStreetMap attribution. Editing
 controls are hidden while physics is active.
 
+Selecting **Race** generates a course from the connected motor-road network at
+the car's current location. The planner prefers a loop of at least 1 km and
+falls back to an outbound-and-return course when necessary. If the connected
+network is too short, the car is left in place and the user receives an
+explanation.
+
+A race stages the player's car and three physics-driven rivals on an adaptive
+four-car grid over a black-and-white checkered road surface. Three red lights
+illuminate one at a time on both the start gantry and HUD; after all three have
+lit, the cars are released together. The minimap highlights the course and
+rivals, floating arrows identify upcoming turns, and ordered checkpoint arches
+disappear as the player passes them. The HUD reports position, time, distance,
+and whether the course is a loop or out-and-back. Cancel Race removes all race
+objects and returns to ordinary driving.
+
 The car spawns at the selected road's sampled height and pitch. Ground roads,
 bridge decks, and diagnosed tunnel open cuts have matching visual and physics
 surfaces, so uphill and downhill grades affect driving.

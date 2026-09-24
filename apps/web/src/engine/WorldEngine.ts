@@ -6,15 +6,19 @@ import type {
   WorldDefinition,
 } from "@osm3d/contracts";
 import { footprintSignature } from "@osm3d/contracts";
-import { wgs84ToLocal } from "@osm3d/geo";
+import { localToWgs84, wgs84ToLocal } from "@osm3d/geo";
 import {
   defaultVehicleConfig,
+  generateRaceCourse,
   isVehiclePoseSafe,
+  nearestRaceProgress,
   neutralVehicleInput,
+  sampleRaceRoute,
   shouldRecoverVehicle,
   smoothVehicleInput,
   speedLimitedEngineForce,
   standardGamepadInput,
+  type RaceCourse,
   type VehicleInput,
 } from "@osm3d/simulation";
 import {
@@ -45,6 +49,12 @@ import {
 } from "./buildingEditVisuals.js";
 import { createRoadSigns, disposeRoadSigns } from "./roadSigns.js";
 import {
+  createRaceScene,
+  disposeRaceScene,
+  updateRaceScene,
+  type RaceScene,
+} from "./raceScene.js";
+import {
   loadVehicleModel,
   disposeVehicleModel,
   type VehicleChoice,
@@ -52,6 +62,21 @@ import {
 } from "./vehicleModels.js";
 
 const FIXED_STEP = 1 / 60;
+const RACE_COUNTDOWN_SECONDS = 3.3;
+
+export type RacePhase = "countdown" | "racing" | "finished";
+
+export interface RaceStats {
+  phase: RacePhase;
+  countdownLights: number;
+  elapsedSeconds: number;
+  position: number;
+  progressMeters: number;
+  lengthMeters: number;
+  courseKind: RaceCourse["kind"];
+  route: Array<[number, number]>;
+  rivals: VehicleMapPose[];
+}
 
 export interface EngineStats {
   roads: number;
@@ -74,6 +99,7 @@ export interface EngineStats {
   recoveryCount: number;
   lastRebuiltChunks: number;
   inputSource: "keyboard" | "gamepad";
+  race?: RaceStats;
 }
 
 export interface EngineSelection {
@@ -114,6 +140,82 @@ export interface EditPointer {
 interface VehicleVisual {
   root: THREE.Group;
   wheels: THREE.Object3D[];
+}
+
+interface RaceVehicle {
+  chassis: RAPIER.RigidBody;
+  controller: RAPIER.DynamicRayCastVehicleController;
+  visual: VehicleVisual;
+  input: VehicleInput;
+  progress: number;
+  skill: number;
+}
+
+interface GridPose {
+  position: THREE.Vector3;
+  rotation: THREE.Quaternion;
+}
+
+interface RaceSession {
+  course: RaceCourse;
+  scene: RaceScene;
+  phase: RacePhase;
+  countdownElapsed: number;
+  elapsedSeconds: number;
+  countdownLights: number;
+  playerProgress: number;
+  checkpointIndex: number;
+  finishPosition: number;
+  gridPoses: GridPose[];
+  rivals: RaceVehicle[];
+}
+
+const wheelConnections = [
+  { x: -0.92, y: -0.36, z: -1.42 },
+  { x: 0.92, y: -0.36, z: -1.42 },
+  { x: -0.92, y: -0.36, z: 1.38 },
+  { x: 0.92, y: -0.36, z: 1.38 },
+];
+
+function proceduralVehicleVisual(color: number): VehicleVisual {
+  const [halfX, halfY, halfZ] = defaultVehicleConfig.chassisHalfExtents;
+  const root = new THREE.Group();
+  const bodyMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(halfX * 2, halfY * 2, halfZ * 2),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.2 }),
+  );
+  bodyMesh.castShadow = true;
+  root.add(bodyMesh);
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(1.55, 0.58, 1.75),
+    new THREE.MeshStandardMaterial({
+      color: 0x9dc7d8,
+      roughness: 0.18,
+      metalness: 0.22,
+    }),
+  );
+  cabin.position.set(0, 0.62, 0.1);
+  cabin.castShadow = true;
+  root.add(cabin);
+  const wheelGeometry = new THREE.CylinderGeometry(
+    defaultVehicleConfig.wheelRadius,
+    defaultVehicleConfig.wheelRadius,
+    defaultVehicleConfig.wheelWidth,
+    18,
+  );
+  wheelGeometry.rotateZ(Math.PI / 2);
+  const wheelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x101214,
+    roughness: 0.9,
+  });
+  const wheels = wheelConnections.map((connection) => {
+    const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
+    wheel.position.copy(connection);
+    wheel.castShadow = true;
+    root.add(wheel);
+    return wheel;
+  });
+  return { root, wheels };
 }
 
 function shapeFromRings(rings: LocalPoint2[][]): THREE.Shape | undefined {
@@ -266,6 +368,7 @@ export class WorldEngine {
   private readonly spawnRotation = new THREE.Quaternion();
   private readonly safePosition = new THREE.Vector3();
   private readonly safeRotation = new THREE.Quaternion();
+  private race: RaceSession | undefined;
   private definition: WorldDefinition;
   private plan: WorldPlan;
   private animationFrame = 0;
@@ -387,6 +490,7 @@ export class WorldEngine {
 
   setMode(mode: EngineMode): void {
     const previousMode = this.mode;
+    if (mode !== "drive" && this.race) this.cancelRace();
     this.mode = mode;
     this.controls.enabled = mode !== "drive";
     this.refreshBuildingVisuals();
@@ -523,6 +627,7 @@ export class WorldEngine {
     definition: WorldDefinition,
     signal?: AbortSignal,
   ): Promise<DefinitionUpdateResult> {
+    if (this.race) this.cancelRace();
     const previousDefinition = this.definition;
     const previousPlan = this.plan;
     const changedTargets = changedOverrideTargetIds(
@@ -602,6 +707,7 @@ export class WorldEngine {
   }
 
   resetVehicle(toOriginalSpawn = false): void {
+    if (this.race && toOriginalSpawn) this.cancelRace();
     const position = toOriginalSpawn ? this.spawnPosition : this.safePosition;
     const rotation = toOriginalSpawn ? this.spawnRotation : this.safeRotation;
     this.chassis.setTranslation(position, true);
@@ -612,7 +718,101 @@ export class WorldEngine {
     this.unsafeElapsed = 0;
   }
 
+  startRace(): string | undefined {
+    if (this.mode !== "drive")
+      return "Enter Drive mode before starting a race.";
+    this.cancelRace();
+    const position = this.chassis.translation();
+    const rotation = this.chassis.rotation();
+    const heading = new THREE.Vector3(0, 0, -1).applyQuaternion(
+      new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
+    );
+    const roadFeatures = new Map(
+      this.definition.features
+        .filter((feature) => feature.kind === "road")
+        .map((feature) => [feature.sourceId, feature]),
+    );
+    const excludedHighways = new Set([
+      "cycleway",
+      "footway",
+      "path",
+      "pedestrian",
+      "steps",
+    ]);
+    const course = generateRaceCourse(
+      this.plan.roads.flatMap((road) => {
+        const tags = roadFeatures.get(road.sourceId)?.tags ?? {};
+        if (
+          excludedHighways.has(tags.highway ?? "") ||
+          ["no", "private"].includes(tags.access ?? "")
+        )
+          return [];
+        return [
+          {
+            id: road.sourceId,
+            width: road.width,
+            layer: road.layer,
+            points: road.points,
+          },
+        ];
+      }),
+      position,
+      heading,
+    );
+    if (!course)
+      return "This connected road network is too short for a 1 km race.";
+
+    const scene = createRaceScene(course);
+    this.scene.add(scene.root);
+    const gridPoses = this.raceGridPoses(course);
+    const playerPose = gridPoses[0]!;
+    this.placeRigidBody(this.chassis, playerPose);
+    this.safePosition.copy(playerPose.position);
+    this.safeRotation.copy(playerPose.rotation);
+    const colors = [0x2f8fea, 0xf2c230, 0x8d52d9];
+    const skills = [0.88, 0.82, 0.76];
+    const rivals = colors.map((color, index) => {
+      const pose = gridPoses[index + 1]!;
+      const rival = this.createRaceVehicle(pose, color, skills[index]!);
+      this.scene.add(rival.visual.root);
+      return rival;
+    });
+    this.currentInput = { ...neutralVehicleInput };
+    this.race = {
+      course,
+      scene,
+      phase: "countdown",
+      countdownElapsed: 0,
+      elapsedSeconds: 0,
+      countdownLights: 1,
+      playerProgress: 0,
+      checkpointIndex: 0,
+      finishPosition: 1,
+      gridPoses,
+      rivals,
+    };
+    updateRaceScene(scene, 1, 0, 0);
+    this.emitStats();
+    return undefined;
+  }
+
+  cancelRace(): void {
+    const race = this.race;
+    if (!race) return;
+    for (const rival of race.rivals) {
+      this.scene.remove(rival.visual.root);
+      disposeVehicleModel(rival.visual.root);
+      this.physics.removeVehicleController(rival.controller);
+      this.physics.removeRigidBody(rival.chassis);
+    }
+    this.scene.remove(race.scene.root);
+    disposeRaceScene(race.scene);
+    this.race = undefined;
+    this.emitStats();
+  }
+
   dispose(): void {
+    this.cancelRace();
     if (this.roadSigns) disposeRoadSigns(this.roadSigns);
     this.scene.remove(this.vehicleVisual.root);
     disposeVehicleModel(this.vehicleVisual.root);
@@ -1016,13 +1216,25 @@ export class WorldEngine {
     );
     this.safePosition.copy(this.spawnPosition);
     this.safeRotation.copy(this.spawnRotation);
+    return this.createPhysicsVehicle(
+      this.spawnPosition,
+      this.spawnRotation,
+      proceduralVehicleVisual(0xef6c2f),
+    );
+  }
+
+  private createPhysicsVehicle(
+    position: THREE.Vector3,
+    rotation: THREE.Quaternion,
+    visual: VehicleVisual,
+  ): {
+    chassis: RAPIER.RigidBody;
+    controller: RAPIER.DynamicRayCastVehicleController;
+    visual: VehicleVisual;
+  } {
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(
-        this.spawnPosition.x,
-        this.spawnPosition.y,
-        this.spawnPosition.z,
-      )
-      .setRotation(this.spawnRotation)
+      .setTranslation(position.x, position.y, position.z)
+      .setRotation(rotation)
       .setCanSleep(false)
       .setCcdEnabled(true);
     const chassis = this.physics.createRigidBody(bodyDesc);
@@ -1036,12 +1248,6 @@ export class WorldEngine {
     const controller = this.physics.createVehicleController(chassis);
     controller.indexUpAxis = 1;
     controller.setIndexForwardAxis = 2;
-    const wheelConnections = [
-      { x: -0.92, y: -0.36, z: -1.42 },
-      { x: 0.92, y: -0.36, z: -1.42 },
-      { x: -0.92, y: -0.36, z: 1.38 },
-      { x: 0.92, y: -0.36, z: 1.38 },
-    ];
     wheelConnections.forEach((connection, index) => {
       controller.addWheel(
         connection,
@@ -1069,47 +1275,68 @@ export class WorldEngine {
       controller.setWheelFrictionSlip(index, defaultVehicleConfig.frictionSlip);
     });
 
-    const root = new THREE.Group();
-    const bodyMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(halfX * 2, halfY * 2, halfZ * 2),
-      new THREE.MeshStandardMaterial({
-        color: 0xef6c2f,
-        roughness: 0.45,
-        metalness: 0.2,
-      }),
+    return { chassis, controller, visual };
+  }
+
+  private createRaceVehicle(
+    pose: GridPose,
+    color: number,
+    skill: number,
+  ): RaceVehicle {
+    const vehicle = this.createPhysicsVehicle(
+      pose.position,
+      pose.rotation,
+      proceduralVehicleVisual(color),
     );
-    bodyMesh.castShadow = true;
-    root.add(bodyMesh);
-    const cabin = new THREE.Mesh(
-      new THREE.BoxGeometry(1.55, 0.58, 1.75),
-      new THREE.MeshStandardMaterial({
-        color: 0x9dc7d8,
-        roughness: 0.18,
-        metalness: 0.22,
-      }),
+    return {
+      ...vehicle,
+      input: { ...neutralVehicleInput },
+      progress: 0,
+      skill,
+    };
+  }
+
+  private raceGridPoses(course: RaceCourse): GridPose[] {
+    const start = course.points[0]!;
+    const next = sampleRaceRoute(course, 8);
+    const direction = new THREE.Vector3(
+      next.x - start.x,
+      0,
+      next.z - start.z,
+    ).normalize();
+    const right = new THREE.Vector3(-direction.z, 0, direction.x);
+    const yaw = Math.atan2(-direction.x, -direction.z);
+    const pitch = Math.atan2(
+      next.y - start.y,
+      Math.hypot(next.x - start.x, next.z - start.z),
     );
-    cabin.position.set(0, 0.62, 0.1);
-    cabin.castShadow = true;
-    root.add(cabin);
-    const wheelGeometry = new THREE.CylinderGeometry(
-      defaultVehicleConfig.wheelRadius,
-      defaultVehicleConfig.wheelRadius,
-      defaultVehicleConfig.wheelWidth,
-      18,
+    const rotation = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(pitch, yaw, 0, "YXZ"),
     );
-    wheelGeometry.rotateZ(Math.PI / 2);
-    const wheelMaterial = new THREE.MeshStandardMaterial({
-      color: 0x101214,
-      roughness: 0.9,
-    });
-    const wheels = wheelConnections.map((connection) => {
-      const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
-      wheel.position.copy(connection);
-      wheel.castShadow = true;
-      root.add(wheel);
-      return wheel;
-    });
-    return { chassis, controller, visual: { root, wheels } };
+    const slots =
+      course.roadWidth >= 6.5
+        ? [
+            { back: 2.5, side: -1.25 },
+            { back: 2.5, side: 1.25 },
+            { back: 8, side: -1.25 },
+            { back: 8, side: 1.25 },
+          ]
+        : [2.5, 8, 13.5, 19].map((back) => ({ back, side: 0 }));
+    return slots.map(({ back, side }) => ({
+      position: new THREE.Vector3(
+        start.x - direction.x * back + right.x * side,
+        start.y + 1.4,
+        start.z - direction.z * back + right.z * side,
+      ),
+      rotation: rotation.clone(),
+    }));
+  }
+
+  private placeRigidBody(body: RAPIER.RigidBody, pose: GridPose): void {
+    body.setTranslation(pose.position, true);
+    body.setRotation(pose.rotation, true);
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
   private readonly resize = (): void => {
@@ -1268,7 +1495,11 @@ export class WorldEngine {
   }
 
   private targetInput(): VehicleInput {
-    if (this.mode !== "drive" || this.garageOpen) {
+    if (
+      this.mode !== "drive" ||
+      this.garageOpen ||
+      (this.race && this.race.phase !== "racing")
+    ) {
       return {
         throttle: 0,
         brake: 0.75,
@@ -1304,34 +1535,143 @@ export class WorldEngine {
       this.targetInput(),
       FIXED_STEP,
     );
+    this.applyVehicleInput(this.vehicle, this.currentInput);
+    if (this.race) {
+      for (const rival of this.race.rivals) {
+        const target =
+          this.race.phase === "racing"
+            ? this.raceAiInput(this.race, rival)
+            : { throttle: 0, brake: 1, steering: 0, handbrake: true };
+        rival.input = smoothVehicleInput(rival.input, target, FIXED_STEP);
+        this.applyVehicleInput(rival.controller, rival.input);
+      }
+    }
+    this.physics.step();
+    if (this.race) this.advanceRace(this.race);
+    this.updateSafeVehicleState(FIXED_STEP);
+  }
+
+  private applyVehicleInput(
+    vehicle: RAPIER.DynamicRayCastVehicleController,
+    input: VehicleInput,
+  ): void {
     const engineForce = speedLimitedEngineForce(
-      this.currentInput.throttle,
-      this.vehicle.currentVehicleSpeed() * 3.6,
+      input.throttle,
+      vehicle.currentVehicleSpeed() * 3.6,
     );
-    const steering =
-      this.currentInput.steering * defaultVehicleConfig.maxSteeringAngle;
+    const steering = input.steering * defaultVehicleConfig.maxSteeringAngle;
     for (const wheel of [0, 1]) {
-      this.vehicle.setWheelSteering(wheel, steering);
-      this.vehicle.setWheelBrake(
+      vehicle.setWheelSteering(wheel, steering);
+      vehicle.setWheelBrake(
         wheel,
-        this.currentInput.brake * defaultVehicleConfig.brakeForce,
+        input.brake * defaultVehicleConfig.brakeForce,
       );
     }
     for (const wheel of [2, 3]) {
-      this.vehicle.setWheelEngineForce(wheel, engineForce);
-      this.vehicle.setWheelBrake(
+      vehicle.setWheelEngineForce(wheel, engineForce);
+      vehicle.setWheelBrake(
         wheel,
-        this.currentInput.handbrake
+        input.handbrake
           ? defaultVehicleConfig.handbrakeForce
-          : this.currentInput.brake * defaultVehicleConfig.brakeForce,
+          : input.brake * defaultVehicleConfig.brakeForce,
       );
     }
-    this.vehicle.updateVehicle(
-      FIXED_STEP,
-      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC,
+    vehicle.updateVehicle(FIXED_STEP, RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC);
+  }
+
+  private raceAiInput(race: RaceSession, rival: RaceVehicle): VehicleInput {
+    const position = rival.chassis.translation();
+    rival.progress = nearestRaceProgress(race.course, position, rival.progress);
+    const speedKph = Math.abs(rival.controller.currentVehicleSpeed()) * 3.6;
+    const lookAhead = 10 + Math.min(14, speedKph * 0.16);
+    const target = sampleRaceRoute(
+      race.course,
+      Math.min(race.course.length, rival.progress + lookAhead),
     );
-    this.physics.step();
-    this.updateSafeVehicleState(FIXED_STEP);
+    const rotation = rival.chassis.rotation();
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(
+      new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
+    );
+    const desired = new THREE.Vector3(
+      target.x - position.x,
+      0,
+      target.z - position.z,
+    ).normalize();
+    const cross = forward.z * desired.x - forward.x * desired.z;
+    const dot = Math.max(
+      -1,
+      Math.min(1, forward.x * desired.x + forward.z * desired.z),
+    );
+    const angle = Math.atan2(cross, dot);
+    const steering = Math.max(-1, Math.min(1, angle * 1.55));
+    const targetSpeed =
+      (24 + (1 - Math.min(1, Math.abs(angle))) * 42) * rival.skill;
+    return {
+      throttle: speedKph < targetSpeed ? rival.skill : 0,
+      brake: speedKph > targetSpeed + 5 ? 0.55 : 0,
+      steering,
+      handbrake: Math.abs(angle) > 1.15 && speedKph > 28,
+    };
+  }
+
+  private advanceRace(race: RaceSession): void {
+    if (race.phase === "countdown") {
+      race.countdownElapsed += FIXED_STEP;
+      race.countdownLights = Math.min(3, Math.floor(race.countdownElapsed) + 1);
+      this.placeRigidBody(this.chassis, race.gridPoses[0]!);
+      race.rivals.forEach((rival, index) =>
+        this.placeRigidBody(rival.chassis, race.gridPoses[index + 1]!),
+      );
+      if (race.countdownElapsed >= RACE_COUNTDOWN_SECONDS) {
+        race.phase = "racing";
+        race.countdownLights = 0;
+        this.currentInput = { ...neutralVehicleInput };
+        for (const rival of race.rivals)
+          rival.input = { ...neutralVehicleInput };
+      }
+    } else if (race.phase === "racing") {
+      race.elapsedSeconds += FIXED_STEP;
+      const position = this.chassis.translation();
+      race.playerProgress = nearestRaceProgress(
+        race.course,
+        position,
+        race.playerProgress,
+      );
+      const checkpointDistance =
+        race.course.checkpointDistances[race.checkpointIndex];
+      if (checkpointDistance !== undefined) {
+        const checkpoint = sampleRaceRoute(race.course, checkpointDistance);
+        const separation = Math.hypot(
+          position.x - checkpoint.x,
+          position.z - checkpoint.z,
+        );
+        if (
+          race.playerProgress >= checkpointDistance - 12 &&
+          separation <= Math.max(3.5, race.course.roadWidth * 0.62)
+        )
+          race.checkpointIndex += 1;
+      }
+      if (
+        race.checkpointIndex >= race.course.checkpointDistances.length &&
+        race.elapsedSeconds > 5
+      ) {
+        race.finishPosition = this.racePosition(race);
+        race.phase = "finished";
+      }
+    }
+    updateRaceScene(
+      race.scene,
+      race.countdownLights,
+      race.playerProgress,
+      race.checkpointIndex,
+    );
+  }
+
+  private racePosition(race: RaceSession): number {
+    return (
+      1 +
+      race.rivals.filter((rival) => rival.progress > race.playerProgress).length
+    );
   }
 
   private updateSafeVehicleState(deltaSeconds: number): void {
@@ -1407,6 +1747,8 @@ export class WorldEngine {
     if (this.loadedVehicle)
       this.loadedVehicle.brake.value =
         this.currentInput.brake > 0.2 || this.currentInput.handbrake ? 1 : 0;
+    for (const rival of this.race?.rivals ?? [])
+      this.syncRaceVehicle(rival, deltaSeconds);
     if (this.mode === "drive") {
       const desiredOffset = new THREE.Vector3(0, 3.8, 8.8).applyQuaternion(
         this.vehicleVisual.root.quaternion,
@@ -1421,6 +1763,67 @@ export class WorldEngine {
         .add(new THREE.Vector3(0, 1, 0));
       this.camera.lookAt(lookAt);
     }
+  }
+
+  private syncRaceVehicle(rival: RaceVehicle, deltaSeconds: number): void {
+    const position = rival.chassis.translation();
+    const rotation = rival.chassis.rotation();
+    rival.visual.root.position.set(position.x, position.y, position.z);
+    rival.visual.root.quaternion.set(
+      rotation.x,
+      rotation.y,
+      rotation.z,
+      rotation.w,
+    );
+    const spin =
+      (rival.controller.currentVehicleSpeed() * deltaSeconds) /
+      defaultVehicleConfig.wheelRadius;
+    rival.visual.wheels.forEach((wheel, index) => {
+      wheel.rotation.order = "YXZ";
+      wheel.rotation.x += spin;
+      wheel.rotation.y = rival.controller.wheelSteering(index) ?? 0;
+      const connection = wheelConnections[index];
+      if (connection)
+        wheel.position.y =
+          connection.y -
+          (rival.controller.wheelSuspensionLength(index) ?? 0.34);
+    });
+  }
+
+  private raceStats(race: RaceSession): RaceStats {
+    const route = race.course.points
+      .filter(
+        (_, index) =>
+          index % 3 === 0 || index === race.course.points.length - 1,
+      )
+      .map((point): [number, number] => {
+        const location = localToWgs84(
+          { east: point.x, north: -point.z, up: point.y },
+          this.definition.world.anchor,
+        );
+        return [location.longitude, location.latitude];
+      });
+    const rivals = race.rivals.map((rival) =>
+      vehicleMapPose(
+        rival.chassis.translation(),
+        rival.chassis.rotation(),
+        this.definition.world.anchor,
+      ),
+    );
+    return {
+      phase: race.phase,
+      countdownLights: race.countdownLights,
+      elapsedSeconds: race.elapsedSeconds,
+      position:
+        race.phase === "finished"
+          ? race.finishPosition
+          : this.racePosition(race),
+      progressMeters: race.playerProgress,
+      lengthMeters: race.course.length,
+      courseKind: race.course.kind,
+      route,
+      rivals,
+    };
   }
 
   private emitStats(): void {
@@ -1463,6 +1866,7 @@ export class WorldEngine {
       recoveryCount: this.recoveryCount,
       lastRebuiltChunks: this.lastRebuiltChunks,
       inputSource: this.inputSource,
+      ...(this.race ? { race: this.raceStats(this.race) } : {}),
     });
   }
 

@@ -56,6 +56,16 @@ const emptyStats: EngineStats = {
   inputSource: "keyboard",
 };
 
+function ordinal(value: number): string {
+  return `${value}${value === 1 ? "st" : value === 2 ? "nd" : value === 3 ? "rd" : "th"}`;
+}
+
+function formatRaceTime(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds - minutes * 60;
+  return `${minutes}:${remainder.toFixed(1).padStart(4, "0")}`;
+}
+
 function replaceOverride(
   current: WorldOverride[],
   override: WorldOverride,
@@ -118,6 +128,7 @@ export function WorldWorkspace({
       steeringSensitivity: 1,
     });
   const [error, setError] = useState<string>();
+  const [raceError, setRaceError] = useState<string>();
   const hasRoads = definition.features.some(
     (feature) => feature.kind === "road",
   );
@@ -555,6 +566,19 @@ export function WorldWorkspace({
               WASD / arrows · Space handbrake · R safe reset · Shift+R spawn
             </span>
             <div className="drive-actions">
+              <button
+                className={stats.race ? "race-cancel" : "race-start"}
+                onClick={() => {
+                  if (stats.race) {
+                    engineRef.current?.cancelRace();
+                    setRaceError(undefined);
+                  } else {
+                    setRaceError(engineRef.current?.startRace());
+                  }
+                }}
+              >
+                {stats.race ? "Cancel race" : "Race"}
+              </button>
               <button onClick={() => engineRef.current?.resetVehicle()}>
                 Reset car
               </button>
@@ -595,10 +619,58 @@ export function WorldWorkspace({
               </label>
               <small>Active input: {stats.inputSource}</small>
             </details>
+            {raceError && <p className="race-error">{raceError}</p>}
           </section>
+          {stats.race && (
+            <section
+              className={`race-hud glass-panel ${stats.race.phase}`}
+              aria-live="polite"
+            >
+              {stats.race.phase === "countdown" ? (
+                <>
+                  <strong>Get ready</strong>
+                  <div
+                    className="race-lights"
+                    aria-label={`${stats.race.countdownLights} of 3 start lights lit`}
+                  >
+                    {[0, 1, 2].map((light) => (
+                      <span
+                        className={
+                          light < stats.race!.countdownLights ? "lit" : ""
+                        }
+                        key={light}
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <strong>
+                    {stats.race.phase === "finished"
+                      ? `Finished ${ordinal(stats.race.position)}`
+                      : `${ordinal(stats.race.position)} of 4`}
+                  </strong>
+                  <span>{formatRaceTime(stats.race.elapsedSeconds)}</span>
+                  <span>
+                    {Math.min(
+                      stats.race.lengthMeters,
+                      stats.race.progressMeters,
+                    ).toFixed(0)}{" "}
+                    / {stats.race.lengthMeters.toFixed(0)} m
+                  </span>
+                  <small>
+                    {stats.race.courseKind === "loop"
+                      ? "Loop course"
+                      : "Out and back"}
+                  </small>
+                </>
+              )}
+            </section>
+          )}
           <DriveMiniMap
             features={definition.features}
             pose={stats.vehicleMapPose}
+            {...(stats.race ? { race: stats.race } : {})}
           />
         </>
       ) : mode === "edit" && engineReady && engineRef.current ? (

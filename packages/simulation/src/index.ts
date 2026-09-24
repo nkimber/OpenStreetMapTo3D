@@ -18,6 +18,19 @@ export interface VehicleConfig {
   frictionSlip: number;
 }
 
+export {
+  generateRaceCourse,
+  nearestRaceProgress,
+  routeDistances,
+  sampleRaceRoute,
+} from "./raceCourse.js";
+export type {
+  GenerateRaceCourseOptions,
+  RaceCourse,
+  RacePoint,
+  RaceRoad,
+} from "./raceCourse.js";
+
 export const defaultVehicleConfig: VehicleConfig = {
   chassisHalfExtents: [0.95, 0.45, 2.05],
   chassisMass: 1_200,

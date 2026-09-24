@@ -933,9 +933,77 @@ button:disabled {
   background: #eff4e9;
   font-weight: 750;
 }
+.drive-help button.race-start {
+  color: #111;
+  background: linear-gradient(135deg, #fff 0 48%, #1d2225 48% 52%, #fff 52%);
+}
+.drive-help button.race-cancel {
+  color: #ffd8d1;
+  background: rgba(184, 52, 43, 0.35);
+}
 .drive-actions {
   display: flex;
   gap: 7px;
+}
+.race-error {
+  max-width: 330px;
+  margin: 7px 0 0;
+  color: #ffb7a7;
+  font-size: 11px;
+}
+.race-hud {
+  position: absolute;
+  z-index: 7;
+  top: 90px;
+  left: 50%;
+  display: flex;
+  min-width: 220px;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 11px 16px;
+  transform: translateX(-50%);
+}
+.race-hud strong {
+  color: white;
+  font-size: 17px;
+}
+.race-hud span,
+.race-hud small {
+  color: #bcd0c3;
+  font-size: 11px;
+}
+.race-hud.countdown {
+  top: 116px;
+  display: grid;
+  min-width: 250px;
+  justify-items: center;
+  padding: 17px 22px;
+}
+.race-lights {
+  display: flex;
+  gap: 14px;
+  padding: 10px 16px;
+  border-radius: 14px;
+  background: #121619;
+  box-shadow: inset 0 0 0 2px #353c42;
+}
+.race-lights span {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #3f1515;
+  box-shadow: inset 0 2px 5px #000;
+}
+.race-lights span.lit {
+  background: #ff2d2d;
+  box-shadow:
+    0 0 18px #ff1d1d,
+    inset 0 2px 5px #ffb0a0;
+}
+.race-hud.finished {
+  border-color: rgba(255, 208, 64, 0.6);
+  background: rgba(52, 39, 8, 0.86);
 }
 .control-settings {
   margin-top: 5px;

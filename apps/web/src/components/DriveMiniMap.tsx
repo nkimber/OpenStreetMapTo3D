@@ -9,13 +9,16 @@ import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import type { FeatureCollection, Geometry } from "geojson";
 import type { NormalizedFeature } from "@osm3d/contracts";
 import type { VehicleMapPose } from "../engine/driveMapPose.js";
+import type { RaceStats } from "../engine/WorldEngine.js";
 
 interface DriveMiniMapProps {
   features: NormalizedFeature[];
   pose: VehicleMapPose;
+  race?: RaceStats;
 }
 
 const sourceId = "drive-minimap-features";
+const raceSourceId = "drive-minimap-race";
 
 maplibregl.setWorkerUrl(workerUrl);
 
@@ -32,13 +35,20 @@ function featureCollection(
   };
 }
 
-function localMapStyle(features: NormalizedFeature[]): StyleSpecification {
+function localMapStyle(
+  features: NormalizedFeature[],
+  race?: RaceStats,
+): StyleSpecification {
   return {
     version: 8,
     sources: {
       [sourceId]: {
         type: "geojson",
         data: featureCollection(features),
+      },
+      [raceSourceId]: {
+        type: "geojson",
+        data: raceFeatureCollection(race),
       },
     },
     layers: [
@@ -85,15 +95,64 @@ function localMapStyle(features: NormalizedFeature[]): StyleSpecification {
           "line-opacity": 0.95,
         },
       },
+      {
+        id: "drive-minimap-race-route",
+        type: "line",
+        source: raceSourceId,
+        filter: ["==", ["get", "kind"], "route"],
+        paint: {
+          "line-color": "#18d7b4",
+          "line-width": 6,
+          "line-opacity": 0.92,
+        },
+      },
+      {
+        id: "drive-minimap-race-rivals",
+        type: "circle",
+        source: raceSourceId,
+        filter: ["==", ["get", "kind"], "rival"],
+        paint: {
+          "circle-radius": 5,
+          "circle-color": "#ffcc32",
+          "circle-stroke-color": "#20242b",
+          "circle-stroke-width": 1.5,
+        },
+      },
     ],
   };
 }
 
-export function DriveMiniMap({ features, pose }: DriveMiniMapProps) {
+function raceFeatureCollection(
+  race: RaceStats | undefined,
+): FeatureCollection<Geometry> {
+  if (!race) return { type: "FeatureCollection", features: [] };
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: { kind: "route" },
+        geometry: { type: "LineString", coordinates: race.route },
+      },
+      ...race.rivals.map((rival, index) => ({
+        type: "Feature" as const,
+        properties: { kind: "rival", index },
+        geometry: {
+          type: "Point" as const,
+          coordinates: [rival.longitude, rival.latitude],
+        },
+      })),
+    ],
+  };
+}
+
+export function DriveMiniMap({ features, pose, race }: DriveMiniMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const featuresRef = useRef(features);
   featuresRef.current = features;
+  const raceRef = useRef(race);
+  raceRef.current = race;
   const [expanded, setExpanded] = useState(true);
 
   useEffect(() => {
@@ -103,7 +162,7 @@ export function DriveMiniMap({ features, pose }: DriveMiniMapProps) {
       // The drive overlay deliberately uses the already-downloaded world data
       // instead of a remote style. It must remain available during offline and
       // cached-data testing, even when the external preview tiles are blocked.
-      style: localMapStyle(featuresRef.current),
+      style: localMapStyle(featuresRef.current, raceRef.current),
       center: [pose.longitude, pose.latitude],
       bearing: pose.headingDegrees,
       zoom: 16.5,
@@ -114,6 +173,9 @@ export function DriveMiniMap({ features, pose }: DriveMiniMapProps) {
     map.on("load", () => {
       const source = map.getSource(sourceId) as GeoJSONSource | undefined;
       source?.setData(featureCollection(featuresRef.current));
+      const raceSource = map.getSource(raceSourceId) as
+        GeoJSONSource | undefined;
+      raceSource?.setData(raceFeatureCollection(raceRef.current));
       map.resize();
     });
     mapRef.current = map;
@@ -128,6 +190,12 @@ export function DriveMiniMap({ features, pose }: DriveMiniMapProps) {
       GeoJSONSource | undefined;
     source?.setData(featureCollection(features));
   }, [features]);
+
+  useEffect(() => {
+    const source = mapRef.current?.getSource(raceSourceId) as
+      GeoJSONSource | undefined;
+    source?.setData(raceFeatureCollection(race));
+  }, [race]);
 
   useEffect(() => {
     mapRef.current?.easeTo({

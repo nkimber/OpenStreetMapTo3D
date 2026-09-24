@@ -2,7 +2,7 @@
 
 Status: Active
 
-Last updated: 2026-09-10
+Last updated: 2026-09-24
 
 ## Working vertical slice
 
@@ -60,6 +60,10 @@ Implemented capabilities:
   keys and development database volumes
 - Offline drive minimap built from imported features, with collapse/expand
   controls and a vehicle marker
+- First-version racing with deterministic 1 km-or-longer loop/out-and-back
+  planning, adaptive four-car grids, three-light start countdown, checkered
+  start/finish surface, three physics-driven rivals, checkpoint arches, turn
+  arrows, minimap course/rival overlays, and live position/time/progress HUD
 - Prepared password-protected pilot deployment with a separate import worker,
   restart recovery, atomic cache writes and backup/packaging scripts
 
@@ -120,7 +124,8 @@ those operational scenarios.
 - Progress stages are coarse and cancellation restarts a build rather than
   resuming it.
 - The standard gamepad layout is fixed; control remapping, touch input, extra
-  driving cameras, traffic, and pedestrians are not implemented.
+  driving cameras, traffic, and pedestrians are not implemented. Race rivals
+  use route-following physics without tactical overtaking or difficulty levels.
 - Public provider availability and OSM feature coverage vary; the fixture is
   the reproducible fallback.
 
