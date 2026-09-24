@@ -19,6 +19,20 @@ export interface RaceCourse {
   roadWidth: number;
   checkpointDistances: number[];
   turnDistances: number[];
+  laps: number;
+  lapLength: number;
+  elevationGain: number;
+  maxGrade: number;
+  averageRoadWidth: number;
+  intersectionCount: number;
+  repetitionRatio: number;
+  qualityScore: number;
+  difficulty: "Easy" | "Technical" | "Challenging";
+  barriers: RaceBarrier[];
+}
+
+export interface RaceBarrier extends RacePoint {
+  yaw: number;
 }
 
 interface Edge {
@@ -347,11 +361,187 @@ function turnDistances(points: RacePoint[], distances: number[]): number[] {
   return turns;
 }
 
+function nearestRoadWidth(roads: RaceRoad[], point: RacePoint): number {
+  let bestWidth = 5;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const road of roads) {
+    for (let index = 0; index < road.points.length - 1; index += 1) {
+      const start = road.points[index]!;
+      const end = road.points[index + 1]!;
+      const dx = end.x - start.x;
+      const dz = end.z - start.z;
+      const lengthSquared = dx * dx + dz * dz;
+      if (lengthSquared < 0.01) continue;
+      const ratio = Math.max(
+        0,
+        Math.min(
+          1,
+          ((point.x - start.x) * dx + (point.z - start.z) * dz) / lengthSquared,
+        ),
+      );
+      const distance = Math.hypot(
+        point.x - (start.x + dx * ratio),
+        point.z - (start.z + dz * ratio),
+      );
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestWidth = road.width;
+      }
+    }
+  }
+  return bestWidth;
+}
+
+function courseBarriers(roads: RaceRoad[], points: RacePoint[]): RaceBarrier[] {
+  const barriers: RaceBarrier[] = [];
+  const seen = new Set<string>();
+  for (let routeIndex = 1; routeIndex < points.length - 1; routeIndex += 1) {
+    const center = points[routeIndex]!;
+    const previous = points[routeIndex - 1]!;
+    const next = points[routeIndex + 1]!;
+    const used = [previous, next].map((point) => {
+      const length = Math.hypot(point.x - center.x, point.z - center.z) || 1;
+      return {
+        x: (point.x - center.x) / length,
+        z: (point.z - center.z) / length,
+      };
+    });
+    const branches: Array<{ point: RacePoint; neighbor: RacePoint }> = [];
+    for (const road of roads) {
+      road.points.forEach((point, index) => {
+        if (Math.hypot(point.x - center.x, point.z - center.z) > 0.8) return;
+        const before = road.points[index - 1];
+        const after = road.points[index + 1];
+        if (before) branches.push({ point, neighbor: before });
+        if (after) branches.push({ point, neighbor: after });
+      });
+    }
+    if (branches.length < 3) continue;
+    for (const branch of branches) {
+      const dx = branch.neighbor.x - branch.point.x;
+      const dz = branch.neighbor.z - branch.point.z;
+      const length = Math.hypot(dx, dz);
+      if (length < 0.1) continue;
+      const direction = { x: dx / length, z: dz / length };
+      if (
+        used.some(
+          (routeDirection) =>
+            routeDirection.x * direction.x + routeDirection.z * direction.z >
+            0.82,
+        )
+      )
+        continue;
+      const distance = Math.min(5, length * 0.45);
+      const barrier = {
+        x: branch.point.x + direction.x * distance,
+        y:
+          branch.point.y +
+          (branch.neighbor.y - branch.point.y) * (distance / length),
+        z: branch.point.z + direction.z * distance,
+        yaw: Math.atan2(-direction.x, -direction.z),
+      };
+      const key = `${Math.round(barrier.x)}:${Math.round(barrier.z)}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        barriers.push(barrier);
+      }
+    }
+  }
+  return barriers.slice(0, 24);
+}
+
+function courseQuality(
+  roads: RaceRoad[],
+  points: RacePoint[],
+  distances: number[],
+  turns: number[],
+) {
+  let elevationGain = 0;
+  let maxGrade = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const before = points[index - 1]!;
+    const after = points[index]!;
+    const run = planarDistance(before, after);
+    const rise = after.y - before.y;
+    elevationGain += Math.max(0, rise);
+    if (run > 0.1) maxGrade = Math.max(maxGrade, Math.abs(rise / run));
+  }
+  const sampledWidths = points.map((point) => nearestRoadWidth(roads, point));
+  const averageRoadWidth =
+    sampledWidths.reduce((sum, width) => sum + width, 0) /
+    Math.max(1, sampledWidths.length);
+  const uniquePoints = new Set(
+    points.map((point) => `${Math.round(point.x)}:${Math.round(point.z)}`),
+  ).size;
+  const repetitionRatio = 1 - uniquePoints / Math.max(1, points.length);
+  const junctionKeys = new Set<string>();
+  const degrees = new Map<string, Set<string>>();
+  for (const road of roads) {
+    for (let index = 0; index < road.points.length - 1; index += 1) {
+      const left = road.points[index]!;
+      const right = road.points[index + 1]!;
+      const leftKey = `${Math.round(left.x)}:${Math.round(left.z)}`;
+      const rightKey = `${Math.round(right.x)}:${Math.round(right.z)}`;
+      const leftNeighbors = degrees.get(leftKey) ?? new Set<string>();
+      const rightNeighbors = degrees.get(rightKey) ?? new Set<string>();
+      leftNeighbors.add(rightKey);
+      rightNeighbors.add(leftKey);
+      degrees.set(leftKey, leftNeighbors);
+      degrees.set(rightKey, rightNeighbors);
+    }
+  }
+  for (const point of points) {
+    const key = `${Math.round(point.x)}:${Math.round(point.z)}`;
+    if ((degrees.get(key)?.size ?? 0) >= 3) junctionKeys.add(key);
+  }
+  const intersectionCount = junctionKeys.size;
+  const turnVariety = Math.min(
+    1,
+    turns.length / Math.max(4, distances.at(-1)! / 180),
+  );
+  const qualityScore = Math.round(
+    Math.max(
+      0,
+      Math.min(
+        100,
+        72 +
+          Math.min(12, (averageRoadWidth - 4.5) * 4) +
+          turnVariety * 10 +
+          Math.min(6, intersectionCount) -
+          maxGrade * 120 -
+          repetitionRatio * 28,
+      ),
+    ),
+  );
+  const technicality =
+    turns.length / Math.max(1, (distances.at(-1) ?? 1) / 1_000) +
+    maxGrade * 35 +
+    Math.max(0, 6 - averageRoadWidth);
+  const difficulty =
+    technicality >= 10
+      ? "Challenging"
+      : technicality >= 5
+        ? "Technical"
+        : "Easy";
+  return {
+    elevationGain,
+    maxGrade,
+    averageRoadWidth,
+    intersectionCount,
+    repetitionRatio,
+    qualityScore,
+    difficulty,
+  } as const;
+}
+
 function completeCourse(
   kind: RaceCourse["kind"],
   points: RacePoint[],
   roadWidth: number,
   checkpointSpacing: number,
+  roads: RaceRoad[],
+  laps = 1,
+  lapLength = routeDistances(points).at(-1) ?? 0,
 ): RaceCourse {
   const distances = routeDistances(points);
   const length = distances.at(-1) ?? 0;
@@ -363,6 +553,7 @@ function completeCourse(
   )
     checkpointDistances.push(distance);
   checkpointDistances.push(length);
+  const turns = turnDistances(points, distances);
   return {
     kind,
     points,
@@ -370,7 +561,11 @@ function completeCourse(
     length,
     roadWidth,
     checkpointDistances,
-    turnDistances: turnDistances(points, distances),
+    turnDistances: turns,
+    laps,
+    lapLength,
+    ...courseQuality(roads, points, distances, turns),
+    barriers: courseBarriers(roads, points),
   };
 }
 
@@ -404,7 +599,13 @@ export function generateRaceCourse(
     ];
     const length = routeDistances(points).at(-1) ?? 0;
     if (length >= minimumLength)
-      return completeCourse("loop", points, edge.roadWidth, checkpointSpacing);
+      return completeCourse(
+        "loop",
+        points,
+        edge.roadWidth,
+        checkpointSpacing,
+        roads,
+      );
   }
 
   const excludedStartEdge = { from: edge.from, to: edge.to };
@@ -443,5 +644,89 @@ export function generateRaceCourse(
     points,
     edge.roadWidth,
     checkpointSpacing,
+    roads,
   );
+}
+
+export interface GenerateRaceCourseCandidatesOptions extends GenerateRaceCourseOptions {
+  targetLength?: number;
+  candidateCount?: number;
+}
+
+function repeatCourse(
+  course: RaceCourse,
+  roads: RaceRoad[],
+  targetLength: number,
+  checkpointSpacing: number,
+): RaceCourse {
+  const laps = Math.max(1, Math.ceil(targetLength / course.length));
+  if (laps === 1) return course;
+  const points: RacePoint[] = [];
+  for (let lap = 0; lap < laps; lap += 1)
+    points.push(...course.points.slice(lap === 0 ? 0 : 1));
+  return completeCourse(
+    course.kind,
+    points,
+    course.roadWidth,
+    checkpointSpacing,
+    roads,
+    laps,
+    course.length,
+  );
+}
+
+/** Produces deterministic, scored alternatives suitable for a pre-race picker. */
+export function generateRaceCourseCandidates(
+  roads: RaceRoad[],
+  start: Pick<RacePoint, "x" | "z">,
+  heading: Pick<RacePoint, "x" | "z">,
+  options: GenerateRaceCourseCandidatesOptions = {},
+): RaceCourse[] {
+  const targetLength = options.targetLength ?? options.minimumLength ?? 1_000;
+  const checkpointSpacing = options.checkpointSpacing ?? 125;
+  const candidateCount = options.candidateCount ?? 3;
+  const length = Math.hypot(heading.x, heading.z) || 1;
+  const forward = { x: heading.x / length, z: heading.z / length };
+  const headings = [
+    forward,
+    { x: -forward.x, z: -forward.z },
+    { x: -forward.z, z: forward.x },
+    { x: forward.z, z: -forward.x },
+  ];
+  const roadSets = [
+    roads,
+    roads.filter((road) => road.width >= 5.5),
+    roads.filter((road) => road.width >= 6.5),
+  ].filter((set) => set.length > 0);
+  const candidates: RaceCourse[] = [];
+  const signatures = new Set<string>();
+  for (const roadSet of roadSets) {
+    for (const direction of headings) {
+      const generated = generateRaceCourse(roadSet, start, direction, {
+        minimumLength: Math.min(1_000, targetLength),
+        checkpointSpacing,
+      });
+      if (!generated) continue;
+      const course = repeatCourse(
+        generated,
+        roadSet,
+        targetLength,
+        checkpointSpacing,
+      );
+      const signature = course.points
+        .slice(0, Math.ceil(course.points.length / course.laps))
+        .map((point) => `${Math.round(point.x)}:${Math.round(point.z)}`)
+        .join("|");
+      if (signatures.has(signature)) continue;
+      signatures.add(signature);
+      candidates.push(course);
+    }
+  }
+  return candidates
+    .sort(
+      (left, right) =>
+        Number(right.kind === "loop") - Number(left.kind === "loop") ||
+        right.qualityScore - left.qualityScore,
+    )
+    .slice(0, candidateCount);
 }

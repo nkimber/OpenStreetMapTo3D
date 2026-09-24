@@ -14,6 +14,10 @@ export interface RaceScene {
   arrows: Array<{ distance: number; root: THREE.Object3D }>;
 }
 
+export interface RaceSceneOptions {
+  roadClosures?: boolean;
+}
+
 function routeDirection(course: RaceCourse, distance: number): THREE.Vector3 {
   const before = sampleRaceRoute(course, Math.max(0, distance - 2));
   const after = sampleRaceRoute(course, Math.min(course.length, distance + 2));
@@ -166,11 +170,44 @@ function addGate(
   return { distance, root: arch };
 }
 
-export function createRaceScene(course: RaceCourse): RaceScene {
+function addRoadClosures(root: THREE.Group, course: RaceCourse): void {
+  for (const barrier of course.barriers) {
+    const group = new THREE.Group();
+    group.position.set(barrier.x, barrier.y + 0.55, barrier.z);
+    group.rotation.y = barrier.yaw;
+    for (let index = -2; index <= 2; index += 1) {
+      const segment = new THREE.Mesh(
+        new THREE.BoxGeometry(0.9, 0.38, 0.16),
+        new THREE.MeshStandardMaterial({
+          color: index % 2 === 0 ? 0xf4f1e8 : 0xe13c32,
+          roughness: 0.62,
+        }),
+      );
+      segment.position.x = index * 0.9;
+      segment.castShadow = true;
+      group.add(segment);
+    }
+    for (const side of [-1, 1]) {
+      const foot = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, 1.1, 0.16),
+        new THREE.MeshStandardMaterial({ color: 0x2c3135 }),
+      );
+      foot.position.set(side * 1.8, -0.35, 0);
+      group.add(foot);
+    }
+    root.add(group);
+  }
+}
+
+export function createRaceScene(
+  course: RaceCourse,
+  options: RaceSceneOptions = {},
+): RaceScene {
   const root = new THREE.Group();
   root.name = "race-scene";
   addStartGrid(root, course);
   const lightMaterials = addGantry(root, course);
+  if (options.roadClosures ?? true) addRoadClosures(root, course);
   const gates = course.checkpointDistances
     .slice(0, -1)
     .map((distance) => addGate(root, course, distance));

@@ -21,6 +21,8 @@ import {
 } from "../engine/vehicleModels.js";
 import {
   WorldEngine,
+  type RaceCoursePreview,
+  type RaceDifficulty,
   type DriveInputPreferences,
   type EngineMode,
   type EngineSelection,
@@ -130,6 +132,14 @@ export function WorldWorkspace({
   const [error, setError] = useState<string>();
   const [raceError, setRaceError] = useState<string>();
   const [racePreparing, setRacePreparing] = useState(false);
+  const [raceSetupOpen, setRaceSetupOpen] = useState(false);
+  const [raceLength, setRaceLength] = useState(1_000);
+  const [raceDifficulty, setRaceDifficulty] =
+    useState<RaceDifficulty>("competitive");
+  const [raceRoadClosures, setRaceRoadClosures] = useState(true);
+  const [raceCandidates, setRaceCandidates] = useState<RaceCoursePreview[]>([]);
+  const [selectedRaceCourseId, setSelectedRaceCourseId] = useState<string>();
+  const [raceVariation, setRaceVariation] = useState(0);
   const hasRoads = definition.features.some(
     (feature) => feature.kind === "road",
   );
@@ -140,6 +150,9 @@ export function WorldWorkspace({
         (feature) => feature.sourceId === selection.sourceId,
       ),
     [definition.features, selection.sourceId],
+  );
+  const selectedRaceCandidate = raceCandidates.find(
+    (course) => course.id === selectedRaceCourseId,
   );
 
   useEffect(() => {
@@ -202,6 +215,10 @@ export function WorldWorkspace({
 
   useEffect(() => {
     engineRef.current?.setMode(mode);
+    if (mode !== "drive") {
+      engineRef.current?.setRaceSetupOpen(false);
+      setRaceSetupOpen(false);
+    }
   }, [mode]);
 
   useEffect(() => {
@@ -232,7 +249,27 @@ export function WorldWorkspace({
       );
     }
   };
-  const toggleRace = async () => {
+  const refreshRaceCandidates = (length: number, variation: number) => {
+    const candidates =
+      engineRef.current?.previewRaceCourses(length, variation) ?? [];
+    setRaceCandidates(candidates);
+    setSelectedRaceCourseId(candidates[0]?.id);
+    setRaceError(
+      candidates.length === 0
+        ? `No suitable ${(length / 1_000).toFixed(0)} km course starts from this road.`
+        : undefined,
+    );
+  };
+  const openRaceSetup = () => {
+    engineRef.current?.setRaceSetupOpen(true);
+    setRaceSetupOpen(true);
+    refreshRaceCandidates(raceLength, raceVariation);
+  };
+  const closeRaceSetup = () => {
+    engineRef.current?.setRaceSetupOpen(false);
+    setRaceSetupOpen(false);
+  };
+  const toggleRace = () => {
     const engine = engineRef.current;
     if (!engine) return;
     if (stats.race) {
@@ -240,11 +277,24 @@ export function WorldWorkspace({
       setRaceError(undefined);
       return;
     }
+    openRaceSetup();
+  };
+  const beginRace = async () => {
+    const engine = engineRef.current;
+    if (!engine || !selectedRaceCourseId) return;
     setRacePreparing(true);
     setRaceError(undefined);
     try {
-      const message = await engine.startRace();
-      if (engineRef.current === engine) setRaceError(message);
+      const message = await engine.startRace({
+        courseId: selectedRaceCourseId,
+        targetLength: raceLength,
+        difficulty: raceDifficulty,
+        roadClosures: raceRoadClosures,
+      });
+      if (engineRef.current === engine) {
+        setRaceError(message);
+        if (!message) setRaceSetupOpen(false);
+      }
     } catch (reason) {
       if (engineRef.current === engine)
         setRaceError(
@@ -594,7 +644,7 @@ export function WorldWorkspace({
               <button
                 className={stats.race ? "race-cancel" : "race-start"}
                 disabled={racePreparing}
-                onClick={() => void toggleRace()}
+                onClick={toggleRace}
               >
                 {racePreparing
                   ? "Loading racers…"
@@ -644,6 +694,111 @@ export function WorldWorkspace({
             </details>
             {raceError && <p className="race-error">{raceError}</p>}
           </section>
+          {raceSetupOpen && !stats.race && (
+            <section className="race-setup glass-panel" aria-label="Race setup">
+              <header>
+                <div>
+                  <small>Race director</small>
+                  <strong>Choose your course</strong>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeRaceSetup}
+                  aria-label="Close race setup"
+                >
+                  ×
+                </button>
+              </header>
+              <div className="race-setup-options">
+                <fieldset>
+                  <legend>Distance</legend>
+                  {[1_000, 3_000, 5_000].map((length) => (
+                    <button
+                      className={raceLength === length ? "selected" : ""}
+                      key={length}
+                      type="button"
+                      onClick={() => {
+                        setRaceLength(length);
+                        refreshRaceCandidates(length, raceVariation);
+                      }}
+                    >
+                      {length / 1_000} km
+                    </button>
+                  ))}
+                </fieldset>
+                <label>
+                  Rival difficulty
+                  <select
+                    value={raceDifficulty}
+                    onChange={(event) =>
+                      setRaceDifficulty(event.target.value as RaceDifficulty)
+                    }
+                  >
+                    <option value="casual">Casual</option>
+                    <option value="competitive">Competitive</option>
+                    <option value="expert">Expert</option>
+                  </select>
+                </label>
+                <label className="race-closures">
+                  <input
+                    type="checkbox"
+                    checked={raceRoadClosures}
+                    onChange={(event) =>
+                      setRaceRoadClosures(event.target.checked)
+                    }
+                  />
+                  Close misleading junction exits
+                </label>
+              </div>
+              <div className="race-course-list">
+                {raceCandidates.map((course) => (
+                  <button
+                    className={
+                      selectedRaceCourseId === course.id ? "selected" : ""
+                    }
+                    key={course.id}
+                    type="button"
+                    onClick={() => setSelectedRaceCourseId(course.id)}
+                  >
+                    <span>
+                      <strong>{course.title}</strong>
+                      <small>
+                        {course.difficulty} · quality {course.qualityScore}/100
+                      </small>
+                    </span>
+                    <span>
+                      {(course.lengthMeters / 1_000).toFixed(1)} km
+                      <small>
+                        {course.laps > 1 ? `${course.laps} laps · ` : ""}
+                        {course.turnCount} turns ·{" "}
+                        {course.elevationGainMeters.toFixed(0)} m climb
+                      </small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <footer>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const variation = raceVariation + 1;
+                    setRaceVariation(variation);
+                    refreshRaceCandidates(raceLength, variation);
+                  }}
+                >
+                  Regenerate routes
+                </button>
+                <button
+                  className="race-launch"
+                  type="button"
+                  disabled={!selectedRaceCourseId || racePreparing}
+                  onClick={() => void beginRace()}
+                >
+                  {racePreparing ? "Loading racers…" : "Start race"}
+                </button>
+              </footer>
+            </section>
+          )}
           {stats.race && (
             <section
               className={`race-hud glass-panel ${stats.race.phase}`}
@@ -694,6 +849,11 @@ export function WorldWorkspace({
             features={definition.features}
             pose={stats.vehicleMapPose}
             {...(stats.race ? { race: stats.race } : {})}
+            {...(raceSetupOpen && selectedRaceCandidate
+              ? {
+                  previewRoute: selectedRaceCandidate.route,
+                }
+              : {})}
           />
         </>
       ) : mode === "edit" && engineReady && engineRef.current ? (

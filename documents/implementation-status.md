@@ -65,6 +65,9 @@ Implemented capabilities:
   start/finish surface, three physics-driven same-model/different-paint rivals,
   collision-aware rival yielding, checkpoint arches, turn arrows, minimap
   course/rival overlays, and live position/time/progress HUD
+- Pre-race director with 1/3/5 km targets, scored route alternatives, course
+  preview, difficulty selection, multi-lap expansion, unsuitable-road filtering,
+  route regeneration and optional unused-junction closure barriers
 - More forgiving cornering from longer, firmer-damped suspension, a modestly
   lowered mass center and speed-sensitive steering, without forced-upright
   stabilization

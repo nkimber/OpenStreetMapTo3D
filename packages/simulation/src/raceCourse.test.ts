@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   generateRaceCourse,
+  generateRaceCourseCandidates,
   nearestRaceProgress,
   sampleRaceRoute,
   type RaceRoad,
@@ -90,5 +91,59 @@ describe("race course generation", () => {
     expect(sampleRaceRoute(course, 100).x).toBeCloseTo(100);
     expect(nearestRaceProgress(course, { x: 120, z: 1 }, 90)).toBeCloseTo(120);
     expect(nearestRaceProgress(course, { x: 120, z: 1 }, 90)).toBeLessThan(200);
+  });
+
+  it("scores candidate routes and expands a circuit to the selected distance", () => {
+    const roads = [
+      line("south", [
+        [0, 0],
+        [300, 0],
+      ]),
+      line("east", [
+        [300, 0],
+        [300, 300],
+      ]),
+      line("north", [
+        [300, 300],
+        [0, 300],
+      ]),
+      line("west", [
+        [0, 300],
+        [0, 0],
+      ]),
+    ];
+    const candidates = generateRaceCourseCandidates(
+      roads,
+      { x: 40, z: 2 },
+      { x: 1, z: 0 },
+      { targetLength: 3_000 },
+    );
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates[0]?.kind).toBe("loop");
+    expect(candidates[0]?.length).toBeGreaterThanOrEqual(3_000);
+    expect(candidates[0]?.laps).toBeGreaterThan(1);
+    expect(candidates[0]?.qualityScore).toBeGreaterThan(0);
+    expect(candidates[0]?.averageRoadWidth).toBe(7);
+  });
+
+  it("identifies an unused junction branch for optional course barriers", () => {
+    const course = generateRaceCourse(
+      [
+        line("loop-a", [
+          [0, 0],
+          [300, 0],
+          [300, 300],
+          [0, 300],
+          [0, 0],
+        ]),
+        line("branch", [
+          [300, 0],
+          [450, -120],
+        ]),
+      ],
+      { x: 40, z: 0 },
+      { x: 1, z: 0 },
+    );
+    expect(course?.barriers.length).toBeGreaterThan(0);
   });
 });

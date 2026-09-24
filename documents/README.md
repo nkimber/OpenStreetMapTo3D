@@ -28,6 +28,8 @@ MVP from later roadmap items.
   controls, rotated import queries, persistence and boundary semantics.
 - [Garage and neighborhood graphics](graphics-and-garage.md) covers CC0 cars,
   saved vehicle choices, procedural house details and appearance limitations.
+- [Racing](racing.md) covers course generation, race setup, rival behavior,
+  rules, presentation and results.
 - [Building editor](building-customizations.md) covers door and garage placement,
   driveways, boundaries, appearance controls and shared building persistence.
 - [Technical architecture](technical-architecture.md) describes containers,

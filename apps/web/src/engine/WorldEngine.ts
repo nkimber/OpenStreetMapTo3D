@@ -9,7 +9,7 @@ import { footprintSignature } from "@osm3d/contracts";
 import { localToWgs84, wgs84ToLocal } from "@osm3d/geo";
 import {
   defaultVehicleConfig,
-  generateRaceCourse,
+  generateRaceCourseCandidates,
   isVehiclePoseSafe,
   nearestRaceProgress,
   neutralVehicleInput,
@@ -69,6 +69,30 @@ const FIXED_STEP = 1 / 60;
 const RACE_COUNTDOWN_SECONDS = 3.3;
 
 export type RacePhase = "countdown" | "racing" | "finished";
+export type RaceDifficulty = "casual" | "competitive" | "expert";
+
+export interface RaceCoursePreview {
+  id: string;
+  title: string;
+  lengthMeters: number;
+  lapLengthMeters: number;
+  laps: number;
+  kind: RaceCourse["kind"];
+  difficulty: RaceCourse["difficulty"];
+  elevationGainMeters: number;
+  maxGradePercent: number;
+  averageRoadWidthMeters: number;
+  turnCount: number;
+  qualityScore: number;
+  route: Array<[number, number]>;
+}
+
+export interface RaceStartOptions {
+  courseId?: string;
+  targetLength?: number;
+  difficulty?: RaceDifficulty;
+  roadClosures?: boolean;
+}
 
 export interface RaceStats {
   phase: RacePhase;
@@ -370,6 +394,8 @@ export class WorldEngine {
   private vehicleLoadRevision = 0;
   private raceLoadRevision = 0;
   private garageOpen = false;
+  private raceSetupOpen = false;
+  private readonly raceCourseCandidates = new Map<string, RaceCourse>();
   private readonly spawnPosition = new THREE.Vector3();
   private readonly spawnRotation = new THREE.Quaternion();
   private readonly safePosition = new THREE.Vector3();
@@ -463,6 +489,13 @@ export class WorldEngine {
     if (!open && this.mode === "drive") this.renderer.domElement.focus();
   }
 
+  setRaceSetupOpen(open: boolean): void {
+    this.raceSetupOpen = open;
+    this.keys.clear();
+    this.currentInput = { ...neutralVehicleInput };
+    if (!open && this.mode === "drive") this.renderer.domElement.focus();
+  }
+
   setRoadSignsEnabled(enabled: boolean): void {
     this.roadSignsEnabled = enabled;
     if (enabled && !this.roadSigns) {
@@ -499,6 +532,7 @@ export class WorldEngine {
   setMode(mode: EngineMode): void {
     const previousMode = this.mode;
     if (mode !== "drive") this.cancelRace();
+    if (mode !== "drive") this.raceSetupOpen = false;
     this.mode = mode;
     this.controls.enabled = mode !== "drive";
     this.refreshBuildingVisuals();
@@ -726,50 +760,67 @@ export class WorldEngine {
     this.unsafeElapsed = 0;
   }
 
-  async startRace(): Promise<string | undefined> {
-    if (this.mode !== "drive")
-      return "Enter Drive mode before starting a race.";
-    this.cancelRace();
-    const revision = ++this.raceLoadRevision;
+  previewRaceCourses(targetLength = 1_000, variation = 0): RaceCoursePreview[] {
     const position = this.chassis.translation();
     const rotation = this.chassis.rotation();
     const heading = new THREE.Vector3(0, 0, -1).applyQuaternion(
       new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
     );
-    const roadFeatures = new Map(
-      this.definition.features
-        .filter((feature) => feature.kind === "road")
-        .map((feature) => [feature.sourceId, feature]),
-    );
-    const excludedHighways = new Set([
-      "cycleway",
-      "footway",
-      "path",
-      "pedestrian",
-      "steps",
-    ]);
-    const course = generateRaceCourse(
-      this.plan.roads.flatMap((road) => {
-        const tags = roadFeatures.get(road.sourceId)?.tags ?? {};
-        if (
-          excludedHighways.has(tags.highway ?? "") ||
-          ["no", "private"].includes(tags.access ?? "")
-        )
-          return [];
-        return [
-          {
-            id: road.sourceId,
-            width: road.width,
-            layer: road.layer,
-            points: road.points,
-          },
-        ];
-      }),
+    heading.applyAxisAngle(new THREE.Vector3(0, 1, 0), variation * 0.37);
+    const courses = generateRaceCourseCandidates(
+      this.raceRoads(),
       position,
       heading,
+      { targetLength, candidateCount: 3 },
     );
+    this.raceCourseCandidates.clear();
+    return courses.map((course, index) => {
+      const id = `${variation}-${index}-${Math.round(course.length)}-${course.qualityScore}`;
+      this.raceCourseCandidates.set(id, course);
+      const route = this.raceRouteCoordinates(course);
+      const descriptor =
+        course.kind === "loop"
+          ? course.difficulty === "Easy"
+            ? "Flowing Circuit"
+            : course.difficulty === "Technical"
+              ? "Technical Circuit"
+              : "Challenge Circuit"
+          : "Road Sprint";
+      return {
+        id,
+        title: `${descriptor} ${index + 1}`,
+        lengthMeters: course.length,
+        lapLengthMeters: course.lapLength,
+        laps: course.laps,
+        kind: course.kind,
+        difficulty: course.difficulty,
+        elevationGainMeters: course.elevationGain,
+        maxGradePercent: course.maxGrade * 100,
+        averageRoadWidthMeters: course.averageRoadWidth,
+        turnCount: course.turnDistances.length,
+        qualityScore: course.qualityScore,
+        route,
+      };
+    });
+  }
+
+  async startRace(options: RaceStartOptions = {}): Promise<string | undefined> {
+    if (this.mode !== "drive")
+      return "Enter Drive mode before starting a race.";
+    this.cancelRace();
+    const revision = ++this.raceLoadRevision;
+    const course =
+      (options.courseId
+        ? this.raceCourseCandidates.get(options.courseId)
+        : undefined) ??
+      (() => {
+        const previews = this.previewRaceCourses(options.targetLength ?? 1_000);
+        return previews[0]
+          ? this.raceCourseCandidates.get(previews[0].id)
+          : undefined;
+      })();
     if (!course)
-      return "This connected road network is too short for a 1 km race.";
+      return `This road network cannot support the selected ${((options.targetLength ?? 1_000) / 1_000).toFixed(0)} km race.`;
 
     const modelResults = await Promise.allSettled(
       rivalVehicleChoices(this.vehicleChoice).map(loadVehicleModel),
@@ -793,7 +844,9 @@ export class WorldEngine {
       return "The matching race cars could not load. Please try again.";
     }
 
-    const scene = createRaceScene(course);
+    const scene = createRaceScene(course, {
+      roadClosures: options.roadClosures ?? true,
+    });
     this.scene.add(scene.root);
     const gridPoses = this.raceGridPoses(course);
     const playerPose = gridPoses[0]!;
@@ -821,6 +874,7 @@ export class WorldEngine {
       gridPoses,
       rivals,
     };
+    this.raceSetupOpen = false;
     updateRaceScene(scene, 1, 0, 0);
     this.emitStats();
     return undefined;
@@ -840,6 +894,56 @@ export class WorldEngine {
     disposeRaceScene(race.scene);
     this.race = undefined;
     this.emitStats();
+  }
+
+  private raceRoads() {
+    const roadFeatures = new Map(
+      this.definition.features
+        .filter((feature) => feature.kind === "road")
+        .map((feature) => [feature.sourceId, feature]),
+    );
+    const excludedHighways = new Set([
+      "cycleway",
+      "footway",
+      "path",
+      "pedestrian",
+      "steps",
+      "track",
+    ]);
+    return this.plan.roads.flatMap((road) => {
+      const tags = roadFeatures.get(road.sourceId)?.tags ?? {};
+      if (
+        road.width < 4.2 ||
+        excludedHighways.has(tags.highway ?? "") ||
+        ["no", "private"].includes(tags.access ?? "") ||
+        ["no", "private"].includes(tags.motor_vehicle ?? "") ||
+        ["driveway", "parking_aisle"].includes(tags.service ?? "") ||
+        tags.area === "yes"
+      )
+        return [];
+      return [
+        {
+          id: road.sourceId,
+          width: road.width,
+          layer: road.layer,
+          points: road.points,
+        },
+      ];
+    });
+  }
+
+  private raceRouteCoordinates(course: RaceCourse): Array<[number, number]> {
+    return course.points
+      .filter(
+        (_, index) => index % 3 === 0 || index === course.points.length - 1,
+      )
+      .map((point): [number, number] => {
+        const location = localToWgs84(
+          { east: point.x, north: -point.z, up: point.y },
+          this.definition.world.anchor,
+        );
+        return [location.longitude, location.latitude];
+      });
   }
 
   dispose(): void {
@@ -1534,6 +1638,7 @@ export class WorldEngine {
     if (
       this.mode !== "drive" ||
       this.garageOpen ||
+      this.raceSetupOpen ||
       (this.race && this.race.phase !== "racing")
     ) {
       return {
@@ -1859,18 +1964,7 @@ export class WorldEngine {
   }
 
   private raceStats(race: RaceSession): RaceStats {
-    const route = race.course.points
-      .filter(
-        (_, index) =>
-          index % 3 === 0 || index === race.course.points.length - 1,
-      )
-      .map((point): [number, number] => {
-        const location = localToWgs84(
-          { east: point.x, north: -point.z, up: point.y },
-          this.definition.world.anchor,
-        );
-        return [location.longitude, location.latitude];
-      });
+    const route = this.raceRouteCoordinates(race.course);
     const rivals = race.rivals.map((rival) =>
       vehicleMapPose(
         rival.chassis.translation(),

@@ -22,12 +22,15 @@ export interface VehicleConfig {
 
 export {
   generateRaceCourse,
+  generateRaceCourseCandidates,
   nearestRaceProgress,
   routeDistances,
   sampleRaceRoute,
 } from "./raceCourse.js";
 export type {
   GenerateRaceCourseOptions,
+  GenerateRaceCourseCandidatesOptions,
+  RaceBarrier,
   RaceCourse,
   RacePoint,
   RaceRoad,
