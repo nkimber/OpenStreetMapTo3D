@@ -2,6 +2,7 @@ import RAPIER from "@dimforge/rapier3d-compat";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   defaultVehicleConfig,
+  speedAdjustedSteeringAngle,
   speedLimitedEngineForce,
 } from "@osm3d/simulation";
 import {
@@ -21,10 +22,11 @@ interface ReplayResult {
   peakSpeedKph: number;
   speedBeforeBrakingKph: number;
   speedAfterBrakingKph: number;
+  minimumUprightDot: number;
   uprightW: number;
 }
 
-function replayDrive(plan?: WorldPlan): ReplayResult {
+function replayDrive(plan?: WorldPlan, cornering = false): ReplayResult {
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
   world.timestep = fixedStep;
   if (plan?.terrain) {
@@ -62,6 +64,7 @@ function replayDrive(plan?: WorldPlan): ReplayResult {
   const [halfX, halfY, halfZ] = defaultVehicleConfig.chassisHalfExtents;
   world.createCollider(
     RAPIER.ColliderDesc.cuboid(halfX, halfY, halfZ)
+      .setTranslation(0, defaultVehicleConfig.chassisCenterOfMassOffsetY, 0)
       .setMass(defaultVehicleConfig.chassisMass)
       .setFriction(0.6),
     chassis,
@@ -102,14 +105,24 @@ function replayDrive(plan?: WorldPlan): ReplayResult {
   });
 
   let peakSpeedKph = 0;
+  let minimumUprightDot = 1;
   for (let frame = 0; frame < (plan ? 480 : 240); frame += 1) {
     const speedKph = Math.abs(vehicle.currentVehicleSpeed()) * 3.6;
     peakSpeedKph = Math.max(peakSpeedKph, speedKph);
     const engineForce = speedLimitedEngineForce(1, speedKph);
     vehicle.setWheelEngineForce(2, engineForce);
     vehicle.setWheelEngineForce(3, engineForce);
+    const steering =
+      cornering && frame >= 90 ? speedAdjustedSteeringAngle(1, speedKph) : 0;
+    vehicle.setWheelSteering(0, steering);
+    vehicle.setWheelSteering(1, steering);
     vehicle.updateVehicle(fixedStep, RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC);
     world.step();
+    const rotation = chassis.rotation();
+    minimumUprightDot = Math.min(
+      minimumUprightDot,
+      1 - 2 * (rotation.x * rotation.x + rotation.z * rotation.z),
+    );
   }
   const speedBeforeBrakingKph = Math.abs(vehicle.currentVehicleSpeed()) * 3.6;
 
@@ -132,6 +145,7 @@ function replayDrive(plan?: WorldPlan): ReplayResult {
     peakSpeedKph,
     speedBeforeBrakingKph,
     speedAfterBrakingKph: Math.abs(vehicle.currentVehicleSpeed()) * 3.6,
+    minimumUprightDot,
     uprightW: Math.abs(rotation.w),
   };
   world.free();
@@ -242,5 +256,12 @@ describe("Rapier vehicle replay", () => {
     expect(second.finalX).toBeCloseTo(first.finalX, 5);
     expect(second.finalZ).toBeCloseTo(first.finalZ, 5);
     expect(second.peakSpeedKph).toBeCloseTo(first.peakSpeedKph, 5);
+  });
+
+  it("stays controllable through sustained full steering without forced-upright physics", () => {
+    const result = replayDrive(undefined, true);
+    expect(result.peakSpeedKph).toBeGreaterThan(25);
+    expect(Math.abs(result.finalX)).toBeGreaterThan(5);
+    expect(result.minimumUprightDot).toBeGreaterThan(0.55);
   });
 });

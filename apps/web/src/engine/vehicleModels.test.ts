@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   defaultVehicleChoice,
   parseVehicleChoice,
+  rivalVehicleChoices,
   vehicles,
 } from "./vehicleModels.js";
 
@@ -19,6 +20,13 @@ describe("vehicle catalog", () => {
       id: "suv",
       color: "#123abc",
     });
+  });
+  it("gives every rival the selected model with a distinct paint color", () => {
+    const choices = rivalVehicleChoices({ id: "suv", color: "#2F8FEA" });
+    expect(choices).toHaveLength(3);
+    expect(choices.every((choice) => choice.id === "suv")).toBe(true);
+    expect(new Set(choices.map((choice) => choice.color)).size).toBe(3);
+    expect(choices.some((choice) => choice.color === "#2f8fea")).toBe(false);
   });
   for (const vehicle of vehicles)
     it(`${vehicle.id} is a local GLB with four named drive wheels`, () => {

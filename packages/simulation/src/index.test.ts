@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   isVehiclePoseSafe,
   neutralVehicleInput,
+  racerProximityBrake,
   shouldRecoverVehicle,
   smoothVehicleInput,
+  speedAdjustedSteeringAngle,
   speedLimitedEngineForce,
   standardGamepadInput,
 } from "./index.js";
@@ -67,5 +69,46 @@ describe("vehicle input smoothing", () => {
     expect(speedLimitedEngineForce(1, 45)).toBeCloseTo(-1_725);
     expect(speedLimitedEngineForce(1, 90)).toBe(-0);
     expect(speedLimitedEngineForce(-1, 32)).toBe(0);
+  });
+
+  it("softens abrupt steering only at higher road speeds", () => {
+    expect(speedAdjustedSteeringAngle(1, 20)).toBeCloseTo(0.48);
+    expect(speedAdjustedSteeringAngle(1, 90)).toBeCloseTo(0.336);
+    expect(speedAdjustedSteeringAngle(-1, 90)).toBeCloseTo(-0.336);
+  });
+
+  it("brakes for a car ahead without blocking a neighboring lane or a car behind", () => {
+    expect(
+      racerProximityBrake({
+        forwardX: 0,
+        forwardZ: -1,
+        offsetX: 0,
+        offsetZ: -4.5,
+      }),
+    ).toBe(1);
+    expect(
+      racerProximityBrake({
+        forwardX: 0,
+        forwardZ: -1,
+        offsetX: 0,
+        offsetZ: -8,
+      }),
+    ).toBeGreaterThan(0);
+    expect(
+      racerProximityBrake({
+        forwardX: 0,
+        forwardZ: -1,
+        offsetX: 2.5,
+        offsetZ: 0,
+      }),
+    ).toBe(0);
+    expect(
+      racerProximityBrake({
+        forwardX: 0,
+        forwardZ: -1,
+        offsetX: 0,
+        offsetZ: 5,
+      }),
+    ).toBe(0);
   });
 });

@@ -129,6 +129,7 @@ export function WorldWorkspace({
     });
   const [error, setError] = useState<string>();
   const [raceError, setRaceError] = useState<string>();
+  const [racePreparing, setRacePreparing] = useState(false);
   const hasRoads = definition.features.some(
     (feature) => feature.kind === "road",
   );
@@ -229,6 +230,30 @@ export function WorldWorkspace({
       setError(
         "Car selected, but this browser could not save your preference.",
       );
+    }
+  };
+  const toggleRace = async () => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (stats.race) {
+      engine.cancelRace();
+      setRaceError(undefined);
+      return;
+    }
+    setRacePreparing(true);
+    setRaceError(undefined);
+    try {
+      const message = await engine.startRace();
+      if (engineRef.current === engine) setRaceError(message);
+    } catch (reason) {
+      if (engineRef.current === engine)
+        setRaceError(
+          reason instanceof Error
+            ? reason.message
+            : "The race could not be prepared.",
+        );
+    } finally {
+      setRacePreparing(false);
     }
   };
 
@@ -568,16 +593,14 @@ export function WorldWorkspace({
             <div className="drive-actions">
               <button
                 className={stats.race ? "race-cancel" : "race-start"}
-                onClick={() => {
-                  if (stats.race) {
-                    engineRef.current?.cancelRace();
-                    setRaceError(undefined);
-                  } else {
-                    setRaceError(engineRef.current?.startRace());
-                  }
-                }}
+                disabled={racePreparing}
+                onClick={() => void toggleRace()}
               >
-                {stats.race ? "Cancel race" : "Race"}
+                {racePreparing
+                  ? "Loading racers…"
+                  : stats.race
+                    ? "Cancel race"
+                    : "Race"}
               </button>
               <button onClick={() => engineRef.current?.resetVehicle()}>
                 Reset car

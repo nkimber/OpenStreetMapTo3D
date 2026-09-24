@@ -8,7 +8,9 @@ Model-load failure retains the current car. Initial loading has the original pro
 
 ## Vehicle implementation
 
-Three locally bundled Kenney Car Kit models use GLTFLoader. Body proportions are normalized to the existing 1.9 m wide / 4.1 m long physical chassis; mass, suspension, acceleration and braking tuning remain unchanged. Wheel axle positions are derived from the model nodes; tires are normalized independently to circular 0.36 m radius. Front-wheel steering, rolling and suspension travel follow the vehicle controller. The palette shader repaints only body panels, preserving glass, tires and trim; lamp surfaces glow, brake lamps brighten, and a forward spotlight illuminates the road.
+Three locally bundled Kenney Car Kit models use GLTFLoader. Body proportions are normalized to the existing 1.9 m wide / 4.1 m long physical chassis. Wheel axle positions are derived from the model nodes; tires are normalized independently to circular 0.36 m radius. Front-wheel steering, rolling and suspension travel follow the vehicle controller. The palette shader repaints only body panels, preserving glass, tires and trim; lamp surfaces glow, brake lamps brighten, and a forward spotlight illuminates the road.
+
+Race rivals load the same selected model as the player with three distinct paint colors. Rival route following now yields and applies immediate braking when another racer occupies its lane or is already in contact, preventing sustained engine force from pushing the player's car. All cars use 0.4 m suspension travel with firmer compression/relaxation damping, a mildly lowered mass center, and gradual high-speed steering reduction. This improves tight-corner control without an artificial upright constraint, so impacts, slopes and sufficiently aggressive maneuvers can still roll a car.
 
 The garage uses one additional preview renderer, disposed on close/change. Late asynchronous loads are discarded and disposed. Replaced model geometry, materials and textures are released. Future vehicle-specific handling can be added separately.
 

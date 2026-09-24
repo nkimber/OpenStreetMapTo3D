@@ -1,5 +1,6 @@
 export interface VehicleConfig {
   chassisHalfExtents: [number, number, number];
+  chassisCenterOfMassOffsetY: number;
   chassisMass: number;
   wheelRadius: number;
   wheelWidth: number;
@@ -14,6 +15,7 @@ export interface VehicleConfig {
   brakeForce: number;
   handbrakeForce: number;
   maxSteeringAngle: number;
+  highSpeedSteeringFactor: number;
   steeringResponse: number;
   frictionSlip: number;
 }
@@ -33,13 +35,14 @@ export type {
 
 export const defaultVehicleConfig: VehicleConfig = {
   chassisHalfExtents: [0.95, 0.45, 2.05],
+  chassisCenterOfMassOffsetY: -0.16,
   chassisMass: 1_200,
   wheelRadius: 0.36,
   wheelWidth: 0.24,
-  suspensionRestLength: 0.34,
-  suspensionStiffness: 28,
-  suspensionCompression: 4.4,
-  suspensionRelaxation: 2.3,
+  suspensionRestLength: 0.4,
+  suspensionStiffness: 32,
+  suspensionCompression: 5.2,
+  suspensionRelaxation: 3,
   maxSuspensionForce: 100_000,
   engineForce: 2_300,
   maxForwardSpeedKph: 90,
@@ -47,6 +50,7 @@ export const defaultVehicleConfig: VehicleConfig = {
   brakeForce: 110,
   handbrakeForce: 180,
   maxSteeringAngle: 0.48,
+  highSpeedSteeringFactor: 0.7,
   steeringResponse: 4.5,
   frictionSlip: 3.8,
 };
@@ -109,6 +113,48 @@ export function speedLimitedEngineForce(
   const normalizedSpeed = Math.max(0, Math.abs(speedKph)) / speedLimit;
   const availableForce = Math.max(0, 1 - normalizedSpeed * normalizedSpeed);
   return -normalizedThrottle * config.engineForce * availableForce;
+}
+
+export function speedAdjustedSteeringAngle(
+  steering: number,
+  speedKph: number,
+  config: Pick<
+    VehicleConfig,
+    "maxSteeringAngle" | "maxForwardSpeedKph" | "highSpeedSteeringFactor"
+  > = defaultVehicleConfig,
+): number {
+  const highSpeedBlend = Math.max(
+    0,
+    Math.min(1, (Math.abs(speedKph) - 25) / (config.maxForwardSpeedKph - 25)),
+  );
+  const speedFactor = 1 - highSpeedBlend * (1 - config.highSpeedSteeringFactor);
+  return (
+    Math.max(-1, Math.min(1, steering)) * config.maxSteeringAngle * speedFactor
+  );
+}
+
+export interface RacerAvoidanceSample {
+  forwardX: number;
+  forwardZ: number;
+  offsetX: number;
+  offsetZ: number;
+}
+
+/** Brakes a route-following racer before it can keep pushing another car. */
+export function racerProximityBrake(sample: RacerAvoidanceSample): number {
+  const distance = Math.hypot(sample.offsetX, sample.offsetZ);
+  if (distance <= 2.2) return 1;
+  const forwardLength = Math.hypot(sample.forwardX, sample.forwardZ);
+  if (forwardLength < 0.001) return 0;
+  const forwardX = sample.forwardX / forwardLength;
+  const forwardZ = sample.forwardZ / forwardLength;
+  const longitudinal = forwardX * sample.offsetX + forwardZ * sample.offsetZ;
+  const lateral = Math.abs(
+    forwardZ * sample.offsetX - forwardX * sample.offsetZ,
+  );
+  if (longitudinal <= 0 || longitudinal >= 11 || lateral > 2.15) return 0;
+  if (longitudinal <= 4.8) return 1;
+  return (11 - longitudinal) / (11 - 4.8);
 }
 
 export interface VehiclePoseSafetySample {

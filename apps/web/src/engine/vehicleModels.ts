@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { defaultVehicleConfig } from "@osm3d/simulation";
 
 export const vehicles = [
   {
@@ -26,6 +27,14 @@ export const defaultVehicleChoice: VehicleChoice = {
   id: "sedan",
   color: "#e87939",
 };
+const rivalPaintColors = ["#2f8fea", "#f2c230", "#8d52d9", "#e34f4f"] as const;
+
+export function rivalVehicleChoices(choice: VehicleChoice): VehicleChoice[] {
+  return rivalPaintColors
+    .filter((color) => color.toLowerCase() !== choice.color.toLowerCase())
+    .slice(0, 3)
+    .map((color) => ({ id: choice.id, color }));
+}
 export function parseVehicleChoice(value: string | null): VehicleChoice {
   try {
     const choice: unknown = JSON.parse(value ?? "null");
@@ -142,7 +151,7 @@ export async function loadVehicleModel(
     wheel.position.set(0, 0, 0);
     wheel.scale.setScalar(1.2); // Circular 0.36 m tires, independent of body proportions.
     const connection = axle.clone();
-    connection.y += 0.34;
+    connection.y += defaultVehicleConfig.suspensionRestLength;
     connections.push(connection);
     return pivot;
   });

@@ -62,8 +62,12 @@ Implemented capabilities:
   controls and a vehicle marker
 - First-version racing with deterministic 1 km-or-longer loop/out-and-back
   planning, adaptive four-car grids, three-light start countdown, checkered
-  start/finish surface, three physics-driven rivals, checkpoint arches, turn
-  arrows, minimap course/rival overlays, and live position/time/progress HUD
+  start/finish surface, three physics-driven same-model/different-paint rivals,
+  collision-aware rival yielding, checkpoint arches, turn arrows, minimap
+  course/rival overlays, and live position/time/progress HUD
+- More forgiving cornering from longer, firmer-damped suspension, a modestly
+  lowered mass center and speed-sensitive steering, without forced-upright
+  stabilization
 - Prepared password-protected pilot deployment with a separate import worker,
   restart recovery, atomic cache writes and backup/packaging scripts
 
@@ -125,7 +129,8 @@ those operational scenarios.
   resuming it.
 - The standard gamepad layout is fixed; control remapping, touch input, extra
   driving cameras, traffic, and pedestrians are not implemented. Race rivals
-  use route-following physics without tactical overtaking or difficulty levels.
+  use route-following physics with collision yielding but without tactical
+  overtaking or difficulty levels.
 - Public provider availability and OSM feature coverage vary; the fixture is
   the reproducible fallback.
 

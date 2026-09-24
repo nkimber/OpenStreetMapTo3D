@@ -13,9 +13,11 @@ import {
   isVehiclePoseSafe,
   nearestRaceProgress,
   neutralVehicleInput,
+  racerProximityBrake,
   sampleRaceRoute,
   shouldRecoverVehicle,
   smoothVehicleInput,
+  speedAdjustedSteeringAngle,
   speedLimitedEngineForce,
   standardGamepadInput,
   type RaceCourse,
@@ -55,8 +57,10 @@ import {
   type RaceScene,
 } from "./raceScene.js";
 import {
+  defaultVehicleChoice,
   loadVehicleModel,
   disposeVehicleModel,
+  rivalVehicleChoices,
   type VehicleChoice,
   type ModelVisual,
 } from "./vehicleModels.js";
@@ -145,7 +149,7 @@ interface VehicleVisual {
 interface RaceVehicle {
   chassis: RAPIER.RigidBody;
   controller: RAPIER.DynamicRayCastVehicleController;
-  visual: VehicleVisual;
+  visual: ModelVisual;
   input: VehicleInput;
   progress: number;
   skill: number;
@@ -362,7 +366,9 @@ export class WorldEngine {
   private readonly vehicle: RAPIER.DynamicRayCastVehicleController;
   private vehicleVisual: VehicleVisual;
   private loadedVehicle?: ModelVisual;
+  private vehicleChoice: VehicleChoice = { ...defaultVehicleChoice };
   private vehicleLoadRevision = 0;
+  private raceLoadRevision = 0;
   private garageOpen = false;
   private readonly spawnPosition = new THREE.Vector3();
   private readonly spawnRotation = new THREE.Quaternion();
@@ -473,6 +479,7 @@ export class WorldEngine {
       disposeVehicleModel(model.root);
       return;
     }
+    this.cancelRace();
     const previous = this.vehicleVisual.root;
     model.root.position.copy(previous.position);
     model.root.quaternion.copy(previous.quaternion);
@@ -480,6 +487,7 @@ export class WorldEngine {
     disposeVehicleModel(previous);
     this.vehicleVisual = model;
     this.loadedVehicle = model;
+    this.vehicleChoice = { ...choice };
     model.connections.forEach((connection, index) =>
       this.vehicle.setWheelChassisConnectionPointCs(index, connection),
     );
@@ -490,7 +498,7 @@ export class WorldEngine {
 
   setMode(mode: EngineMode): void {
     const previousMode = this.mode;
-    if (mode !== "drive" && this.race) this.cancelRace();
+    if (mode !== "drive") this.cancelRace();
     this.mode = mode;
     this.controls.enabled = mode !== "drive";
     this.refreshBuildingVisuals();
@@ -718,10 +726,11 @@ export class WorldEngine {
     this.unsafeElapsed = 0;
   }
 
-  startRace(): string | undefined {
+  async startRace(): Promise<string | undefined> {
     if (this.mode !== "drive")
       return "Enter Drive mode before starting a race.";
     this.cancelRace();
+    const revision = ++this.raceLoadRevision;
     const position = this.chassis.translation();
     const rotation = this.chassis.rotation();
     const heading = new THREE.Vector3(0, 0, -1).applyQuaternion(
@@ -762,6 +771,28 @@ export class WorldEngine {
     if (!course)
       return "This connected road network is too short for a 1 km race.";
 
+    const modelResults = await Promise.allSettled(
+      rivalVehicleChoices(this.vehicleChoice).map(loadVehicleModel),
+    );
+    const models: ModelVisual[] = [];
+    let modelLoadFailed = false;
+    for (const result of modelResults) {
+      if (result.status === "fulfilled") models.push(result.value);
+      else modelLoadFailed = true;
+    }
+    if (
+      this.disposed ||
+      revision !== this.raceLoadRevision ||
+      this.mode !== "drive"
+    ) {
+      models.forEach((model) => disposeVehicleModel(model.root));
+      return undefined;
+    }
+    if (modelLoadFailed || models.length !== 3) {
+      models.forEach((model) => disposeVehicleModel(model.root));
+      return "The matching race cars could not load. Please try again.";
+    }
+
     const scene = createRaceScene(course);
     this.scene.add(scene.root);
     const gridPoses = this.raceGridPoses(course);
@@ -769,11 +800,10 @@ export class WorldEngine {
     this.placeRigidBody(this.chassis, playerPose);
     this.safePosition.copy(playerPose.position);
     this.safeRotation.copy(playerPose.rotation);
-    const colors = [0x2f8fea, 0xf2c230, 0x8d52d9];
     const skills = [0.88, 0.82, 0.76];
-    const rivals = colors.map((color, index) => {
+    const rivals = models.map((model, index) => {
       const pose = gridPoses[index + 1]!;
-      const rival = this.createRaceVehicle(pose, color, skills[index]!);
+      const rival = this.createRaceVehicle(pose, model, skills[index]!);
       this.scene.add(rival.visual.root);
       return rival;
     });
@@ -797,6 +827,7 @@ export class WorldEngine {
   }
 
   cancelRace(): void {
+    this.raceLoadRevision += 1;
     const race = this.race;
     if (!race) return;
     for (const rival of race.rivals) {
@@ -1241,6 +1272,7 @@ export class WorldEngine {
     const [halfX, halfY, halfZ] = defaultVehicleConfig.chassisHalfExtents;
     this.physics.createCollider(
       RAPIER.ColliderDesc.cuboid(halfX, halfY, halfZ)
+        .setTranslation(0, defaultVehicleConfig.chassisCenterOfMassOffsetY, 0)
         .setMass(defaultVehicleConfig.chassisMass)
         .setFriction(0.6),
       chassis,
@@ -1280,16 +1312,20 @@ export class WorldEngine {
 
   private createRaceVehicle(
     pose: GridPose,
-    color: number,
+    model: ModelVisual,
     skill: number,
   ): RaceVehicle {
     const vehicle = this.createPhysicsVehicle(
       pose.position,
       pose.rotation,
-      proceduralVehicleVisual(color),
+      model,
+    );
+    model.connections.forEach((connection, index) =>
+      vehicle.controller.setWheelChassisConnectionPointCs(index, connection),
     );
     return {
       ...vehicle,
+      visual: model,
       input: { ...neutralVehicleInput },
       progress: 0,
       skill,
@@ -1542,7 +1578,10 @@ export class WorldEngine {
           this.race.phase === "racing"
             ? this.raceAiInput(this.race, rival)
             : { throttle: 0, brake: 1, steering: 0, handbrake: true };
-        rival.input = smoothVehicleInput(rival.input, target, FIXED_STEP);
+        rival.input =
+          target.brake >= 0.95 && target.throttle === 0
+            ? { ...target }
+            : smoothVehicleInput(rival.input, target, FIXED_STEP);
         this.applyVehicleInput(rival.controller, rival.input);
       }
     }
@@ -1559,7 +1598,10 @@ export class WorldEngine {
       input.throttle,
       vehicle.currentVehicleSpeed() * 3.6,
     );
-    const steering = input.steering * defaultVehicleConfig.maxSteeringAngle;
+    const steering = speedAdjustedSteeringAngle(
+      input.steering,
+      vehicle.currentVehicleSpeed() * 3.6,
+    );
     for (const wheel of [0, 1]) {
       vehicle.setWheelSteering(wheel, steering);
       vehicle.setWheelBrake(
@@ -1606,11 +1648,32 @@ export class WorldEngine {
     const steering = Math.max(-1, Math.min(1, angle * 1.55));
     const targetSpeed =
       (24 + (1 - Math.min(1, Math.abs(angle))) * 42) * rival.skill;
+    let proximityBrake = 0;
+    for (const other of [
+      this.chassis,
+      ...race.rivals
+        .filter((candidate) => candidate !== rival)
+        .map((candidate) => candidate.chassis),
+    ]) {
+      const otherPosition = other.translation();
+      proximityBrake = Math.max(
+        proximityBrake,
+        racerProximityBrake({
+          forwardX: forward.x,
+          forwardZ: forward.z,
+          offsetX: otherPosition.x - position.x,
+          offsetZ: otherPosition.z - position.z,
+        }),
+      );
+    }
+    const routeBrake = speedKph > targetSpeed + 5 ? 0.55 : 0;
     return {
-      throttle: speedKph < targetSpeed ? rival.skill : 0,
-      brake: speedKph > targetSpeed + 5 ? 0.55 : 0,
+      throttle:
+        proximityBrake > 0.05 ? 0 : speedKph < targetSpeed ? rival.skill : 0,
+      brake: Math.max(routeBrake, proximityBrake),
       steering,
-      handbrake: Math.abs(angle) > 1.15 && speedKph > 28,
+      handbrake:
+        proximityBrake === 0 && Math.abs(angle) > 1.15 && speedKph > 28,
     };
   }
 
@@ -1742,7 +1805,9 @@ export class WorldEngine {
       const connection = this.loadedVehicle?.connections[index];
       if (connection)
         wheel.position.y =
-          connection.y - (this.vehicle.wheelSuspensionLength(index) ?? 0.34);
+          connection.y -
+          (this.vehicle.wheelSuspensionLength(index) ??
+            defaultVehicleConfig.suspensionRestLength);
     });
     if (this.loadedVehicle)
       this.loadedVehicle.brake.value =
@@ -1782,12 +1847,15 @@ export class WorldEngine {
       wheel.rotation.order = "YXZ";
       wheel.rotation.x += spin;
       wheel.rotation.y = rival.controller.wheelSteering(index) ?? 0;
-      const connection = wheelConnections[index];
+      const connection = rival.visual.connections[index];
       if (connection)
         wheel.position.y =
           connection.y -
-          (rival.controller.wheelSuspensionLength(index) ?? 0.34);
+          (rival.controller.wheelSuspensionLength(index) ??
+            defaultVehicleConfig.suspensionRestLength);
     });
+    rival.visual.brake.value =
+      rival.input.brake > 0.2 || rival.input.handbrake ? 1 : 0;
   }
 
   private raceStats(race: RaceSession): RaceStats {
