@@ -13,7 +13,7 @@ Docker Desktop is the only runtime prerequisite:
 docker compose up --build
 ```
 
-Open [http://localhost:5173](http://localhost:5173). Choose the bundled sample
+Open [http://localhost:6173](http://localhost:6173). Choose the bundled sample
 for a deterministic import, or search for a location and use live OpenStreetMap
 data through the configured Overpass provider. PostGIS data and compressed OSM
 snapshots persist in named Docker volumes.

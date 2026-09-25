@@ -15,7 +15,7 @@ The intended command is:
 docker compose up --build
 ```
 
-The application is available at [http://localhost:5173](http://localhost:5173)
+The application is available at [http://localhost:6173](http://localhost:6173)
 after the web service finishes its workspace-package build.
 
 ## Development services

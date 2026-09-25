@@ -10,7 +10,7 @@ const ConfigSchema = z.object({
     .default("postgresql://osm3d:osm3d-local@localhost:5432/osm3d"),
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   IMPORT_EXECUTION_MODE: z.enum(["inline", "worker"]).default("inline"),
-  PUBLIC_APP_URL: z.url().default("http://localhost:5173"),
+  PUBLIC_APP_URL: z.url().default("http://localhost:6173"),
   NOMINATIM_BASE_URL: z.url().default("https://nominatim.openstreetmap.org"),
   OVERPASS_BASE_URL: z.url().default("https://overpass-api.de/api/interpreter"),
   USGS_ELEVATION_BASE_URL: z
