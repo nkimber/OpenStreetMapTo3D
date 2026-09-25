@@ -170,6 +170,260 @@ function segmentDistance(p: LocalPoint2, a: LocalPoint2, b: LocalPoint2) {
   );
   return Math.hypot(p.x - a.x - t * (b.x - a.x), p.z - a.z - t * (b.z - a.z));
 }
+
+interface RoadProjection {
+  center: LocalPoint2;
+  direction: LocalPoint2;
+  distance: number;
+  width: number;
+}
+
+function nearestRoadProjection(
+  point: LocalPoint2,
+  plan: WorldPlan,
+  roadId?: string,
+): RoadProjection | undefined {
+  let nearest: RoadProjection | undefined;
+  for (const road of plan.roads) {
+    if (road.bridge || road.tunnel || (roadId && road.sourceId !== roadId))
+      continue;
+    for (let index = 0; index + 1 < road.points.length; index++) {
+      const a = road.points[index]!,
+        b = road.points[index + 1]!;
+      const dx = b.x - a.x,
+        dz = b.z - a.z,
+        lengthSquared = dx * dx + dz * dz;
+      const fraction = Math.max(
+        0,
+        Math.min(
+          1,
+          ((point.x - a.x) * dx + (point.z - a.z) * dz) /
+            Math.max(1e-9, lengthSquared),
+        ),
+      );
+      const center = {
+        x: a.x + dx * fraction,
+        z: a.z + dz * fraction,
+      };
+      const distance = Math.hypot(point.x - center.x, point.z - center.z);
+      if (!nearest || distance < nearest.distance) {
+        const length = Math.max(1e-9, Math.sqrt(lengthSquared));
+        nearest = {
+          center,
+          direction: { x: dx / length, z: dz / length },
+          distance,
+          width: road.width,
+        };
+      }
+    }
+  }
+  return nearest;
+}
+
+const sacredRoadSurfaces = new WeakMap<WorldPlan, SurfaceIndex>();
+function sacredRoadSurface(plan: WorldPlan): SurfaceIndex {
+  let surface = sacredRoadSurfaces.get(plan);
+  if (surface) return surface;
+  const mesh = { positions: [] as number[], indices: [] as number[] };
+  const append = (value: { positions: number[]; indices: number[] }) => {
+    const offset = mesh.positions.length / 3;
+    mesh.positions.push(...value.positions);
+    mesh.indices.push(...value.indices.map((index) => index + offset));
+  };
+  const groundRoadIds = new Set<string>();
+  for (const road of plan.roads) {
+    if (road.bridge || road.tunnel) continue;
+    groundRoadIds.add(road.sourceId);
+    append(road.mesh);
+  }
+  for (const junction of plan.junctions)
+    if (junction.sourceIds.some((sourceId) => groundRoadIds.has(sourceId)))
+      append(junction.mesh);
+  surface = new SurfaceIndex(mesh);
+  sacredRoadSurfaces.set(plan, surface);
+  return surface;
+}
+
+function crownTouchesRoad(
+  point: LocalPoint2,
+  radius: number,
+  plan: WorldPlan,
+): boolean {
+  const surface = sacredRoadSurface(plan);
+  for (const ringFraction of [0, 0.5, 1]) {
+    const samples = ringFraction === 0 ? 1 : 24;
+    for (let index = 0; index < samples; index++) {
+      const angle = (index / samples) * Math.PI * 2;
+      if (
+        surface.height(
+          point.x + Math.cos(angle) * radius * ringFraction,
+          point.z + Math.sin(angle) * radius * ringFraction,
+        ) !== undefined
+      )
+        return true;
+    }
+  }
+  return false;
+}
+
+export function roadSafeLandscapePoint(
+  point: LocalPoint2,
+  crownRadius: number,
+  plan: WorldPlan,
+  fallback?: LocalPoint2,
+): { point: LocalPoint2; moved: boolean } {
+  const road = nearestRoadProjection(point, plan);
+  let result = point;
+  let moved = false;
+  if (road) {
+    const clearance = road.width / 2 + crownRadius + 0.35;
+    if (road.distance < clearance) {
+      let x = point.x - road.center.x,
+        z = point.z - road.center.z;
+      if (Math.hypot(x, z) < 0.05 && fallback) {
+        x = fallback.x - road.center.x;
+        z = fallback.z - road.center.z;
+      }
+      if (Math.hypot(x, z) < 0.05) {
+        x = -road.direction.z;
+        z = road.direction.x;
+      }
+      const length = Math.hypot(x, z);
+      result = {
+        x: road.center.x + (x / length) * clearance,
+        z: road.center.z + (z / length) * clearance,
+      };
+      moved = true;
+    }
+  }
+  for (const junction of plan.junctions) {
+    const clearance = junction.radius + crownRadius + 0.35;
+    let x = result.x - junction.center.x,
+      z = result.z - junction.center.z,
+      distance = Math.hypot(x, z);
+    if (distance >= clearance) continue;
+    if (distance < 0.05 && fallback) {
+      x = fallback.x - junction.center.x;
+      z = fallback.z - junction.center.z;
+      distance = Math.hypot(x, z);
+    }
+    if (distance < 0.05) {
+      x = 1;
+      z = 0;
+      distance = 1;
+    }
+    result = {
+      x: junction.center.x + (x / distance) * clearance,
+      z: junction.center.z + (z / distance) * clearance,
+    };
+    moved = true;
+  }
+  for (let attempt = 0; attempt < 40; attempt++) {
+    if (!crownTouchesRoad(result, crownRadius, plan)) break;
+    const nearest = nearestRoadProjection(result, plan);
+    if (!nearest) break;
+    let x = result.x - nearest.center.x,
+      z = result.z - nearest.center.z;
+    const length = Math.hypot(x, z);
+    if (length < 0.05) {
+      x = -nearest.direction.z;
+      z = nearest.direction.x;
+    }
+    const safeLength = Math.max(0.05, Math.hypot(x, z));
+    result = {
+      x: result.x + (x / safeLength) * 0.5,
+      z: result.z + (z / safeLength) * 0.5,
+    };
+    moved = true;
+  }
+  return { point: result, moved };
+}
+
+export function trimRouteToRoadEdge(
+  points: LocalPoint2[],
+  routeWidth: number,
+  plan: WorldPlan,
+  roadId?: string,
+): LocalPoint2[] {
+  if (points.length < 2) return points;
+  const end = points.at(-1)!;
+  const previous = points.at(-2)!;
+  const road = nearestRoadProjection(end, plan, roadId);
+  if (!road) return points;
+  const routeX = road.center.x - previous.x,
+    routeZ = road.center.z - previous.z,
+    routeLength = Math.max(1e-9, Math.hypot(routeX, routeZ));
+  const routeNormal = { x: -routeZ / routeLength, z: routeX / routeLength };
+  const roadNormal = { x: -road.direction.z, z: road.direction.x };
+  const clearance =
+    road.width / 2 +
+    Math.abs(routeNormal.x * roadNormal.x + routeNormal.z * roadNormal.z) *
+      (routeWidth / 2) +
+    0.03;
+  let trimmedEnd = end;
+  if (road.distance < clearance) {
+    let sideX = previous.x - road.center.x,
+      sideZ = previous.z - road.center.z;
+    if (Math.hypot(sideX, sideZ) < 0.05) {
+      sideX = end.x - road.center.x;
+      sideZ = end.z - road.center.z;
+    }
+    if (Math.hypot(sideX, sideZ) < 0.05) {
+      sideX = roadNormal.x;
+      sideZ = roadNormal.z;
+    }
+    const sideLength = Math.hypot(sideX, sideZ);
+    trimmedEnd = {
+      x: road.center.x + (sideX / sideLength) * clearance,
+      z: road.center.z + (sideZ / sideLength) * clearance,
+    };
+  }
+  const routeDx = trimmedEnd.x - previous.x,
+    routeDz = trimmedEnd.z - previous.z,
+    finalLength = Math.hypot(routeDx, routeDz),
+    crossX = (-routeDz / Math.max(1e-9, finalLength)) * (routeWidth / 2),
+    crossZ = (routeDx / Math.max(1e-9, finalLength)) * (routeWidth / 2),
+    surface = sacredRoadSurface(plan);
+  const intersectsRoad = (fraction: number) => {
+    const center = {
+      x: previous.x + routeDx * fraction,
+      z: previous.z + routeDz * fraction,
+    };
+    return [-1, 0, 1].some(
+      (side) =>
+        surface.height(center.x + crossX * side, center.z + crossZ * side) !==
+        undefined,
+    );
+  };
+  let safe = 0;
+  let blocked: number | undefined;
+  const samples = Math.max(1, Math.ceil(finalLength / 0.25));
+  if (intersectsRoad(0)) blocked = 0;
+  else
+    for (let sample = 1; sample <= samples; sample++) {
+      const fraction = sample / samples;
+      if (intersectsRoad(fraction)) {
+        blocked = fraction;
+        break;
+      }
+      safe = fraction;
+    }
+  if (blocked !== undefined) {
+    let blockedBoundary = blocked;
+    for (let iteration = 0; iteration < 18; iteration++) {
+      const middle: number = (safe + blockedBoundary) / 2;
+      if (intersectsRoad(middle)) blockedBoundary = middle;
+      else safe = middle;
+    }
+    const safeFraction = Math.max(0, safe - 0.03 / Math.max(0.03, finalLength));
+    trimmedEnd = {
+      x: previous.x + routeDx * safeFraction,
+      z: previous.z + routeDz * safeFraction,
+    };
+  }
+  return [...points.slice(0, -1), trimmedEnd];
+}
+
 export function routeBlocked(
   points: LocalPoint2[],
   buildings: BuildingPlan[],

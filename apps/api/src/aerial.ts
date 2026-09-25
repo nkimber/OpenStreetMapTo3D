@@ -4,6 +4,7 @@ import {
   footprintSignature,
   type BuildingCustomization,
   type BuildingEnhancementProposal,
+  type LandscapingFeature,
   type MapPoint,
   type NormalizedFeature,
 } from "@osm3d/contracts";
@@ -13,6 +14,23 @@ const IMAGE_SIZE = 512;
 const METERS_PER_LATITUDE_DEGREE = 111_320;
 const ATTRIBUTION = "USGS The National Map — NAIP imagery";
 const LICENSE = "Public domain (United States government work)";
+const ROAD_CLEARANCE_METERS = 0.35;
+const ROAD_WIDTHS: Record<string, number> = {
+  motorway: 24,
+  trunk: 18,
+  primary: 14,
+  secondary: 12,
+  tertiary: 10,
+  residential: 7,
+  living_street: 6,
+  service: 4.5,
+  unclassified: 6,
+  track: 3.5,
+  cycleway: 2.5,
+  footway: 1.8,
+  path: 1.4,
+  steps: 1.4,
+};
 
 interface Bounds {
   west: number;
@@ -193,14 +211,30 @@ function roofObservation(
   };
 }
 
+interface RoadProjection {
+  point: MapPoint;
+  roadId: string;
+  distance: number;
+  width: number;
+  direction: { x: number; y: number };
+}
+
+function roadWidth(feature: NormalizedFeature): number {
+  const explicit = Number(feature.facts.width);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const lanes = Number(feature.facts.lanes);
+  if (Number.isFinite(lanes) && lanes > 0) return Math.max(3, lanes * 3.2);
+  return ROAD_WIDTHS[feature.tags.highway ?? "unclassified"] ?? 5;
+}
+
 function nearestPointOnRoad(
   point: MapPoint,
   features: NormalizedFeature[],
-): { point: MapPoint; roadId: string; distance: number } | undefined {
+): RoadProjection | undefined {
   const latitude = point[1];
   const scaleX =
     METERS_PER_LATITUDE_DEGREE * Math.cos((latitude * Math.PI) / 180);
-  let best: { point: MapPoint; roadId: string; distance: number } | undefined;
+  let best: RoadProjection | undefined;
   for (const road of features.filter((feature) => feature.kind === "road")) {
     if (road.geometry.type !== "LineString") continue;
     const line = road.geometry.coordinates;
@@ -221,6 +255,7 @@ function nearestPointOnRoad(
       );
       const x = ax + (bx - ax) * fraction,
         y = ay + (by - ay) * fraction;
+      const segmentLength = Math.hypot(bx - ax, by - ay);
       const candidate = {
         point: [
           point[0] + x / scaleX,
@@ -228,11 +263,105 @@ function nearestPointOnRoad(
         ] as MapPoint,
         roadId: road.sourceId,
         distance: Math.hypot(x, y),
+        width: roadWidth(road),
+        direction: {
+          x: (bx - ax) / Math.max(1e-9, segmentLength),
+          y: (by - ay) / Math.max(1e-9, segmentLength),
+        },
       };
       if (!best || candidate.distance < best.distance) best = candidate;
     }
   }
   return best;
+}
+
+function offsetFromRoad(
+  source: MapPoint,
+  road: RoadProjection,
+  clearance: number,
+  fallback: MapPoint,
+): MapPoint {
+  const latitude = source[1];
+  const scaleX =
+    METERS_PER_LATITUDE_DEGREE * Math.cos((latitude * Math.PI) / 180);
+  let x = (source[0] - road.point[0]) * scaleX;
+  let y = (source[1] - road.point[1]) * METERS_PER_LATITUDE_DEGREE;
+  if (Math.hypot(x, y) < 0.05) {
+    x = (fallback[0] - road.point[0]) * scaleX;
+    y = (fallback[1] - road.point[1]) * METERS_PER_LATITUDE_DEGREE;
+  }
+  if (Math.hypot(x, y) < 0.05) {
+    x = -road.direction.y;
+    y = road.direction.x;
+  }
+  const length = Math.hypot(x, y);
+  return [
+    road.point[0] + (x / length / scaleX) * clearance,
+    road.point[1] + (y / length / METERS_PER_LATITUDE_DEGREE) * clearance,
+  ];
+}
+
+function mapDistance(a: MapPoint, b: MapPoint): number {
+  const latitude = (a[1] + b[1]) / 2;
+  return Math.hypot(
+    (a[0] - b[0]) *
+      METERS_PER_LATITUDE_DEGREE *
+      Math.cos((latitude * Math.PI) / 180),
+    (a[1] - b[1]) * METERS_PER_LATITUDE_DEGREE,
+  );
+}
+
+function protectRoads(
+  landscaping: LandscapingFeature[],
+  features: NormalizedFeature[],
+  ring: MapPoint[],
+): LandscapingFeature[] {
+  const buildingCenter: MapPoint = [
+    ring.reduce((sum, point) => sum + point[0], 0) / ring.length,
+    ring.reduce((sum, point) => sum + point[1], 0) / ring.length,
+  ];
+  const prepared = landscaping.map((item) => {
+    const road = nearestPointOnRoad(item.point, features);
+    const clearance = road
+      ? road.width / 2 + item.crownRadius + ROAD_CLEARANCE_METERS
+      : 0;
+    if (!road || road.distance >= clearance) return { item, moved: false };
+    return {
+      item: {
+        ...item,
+        point: offsetFromRoad(item.point, road, clearance, buildingCenter),
+      },
+      moved: true,
+    };
+  });
+  const accepted: LandscapingFeature[] = [];
+  for (const [index, candidate] of prepared.entries()) {
+    if (candidate.moved && candidate.item.kind === "tree") {
+      const nearbyExistingTree = prepared.some(
+        (other, otherIndex) =>
+          otherIndex !== index &&
+          !other.moved &&
+          other.item.kind === "tree" &&
+          mapDistance(candidate.item.point, other.item.point) <
+            Math.max(
+              2.5,
+              (candidate.item.crownRadius + other.item.crownRadius) * 0.65,
+            ),
+      );
+      const nearbyAcceptedTree = accepted.some(
+        (other) =>
+          other.kind === "tree" &&
+          mapDistance(candidate.item.point, other.point) <
+            Math.max(
+              2.5,
+              (candidate.item.crownRadius + other.crownRadius) * 0.65,
+            ),
+      );
+      if (nearbyExistingTree || nearbyAcceptedTree) continue;
+    }
+    accepted.push(candidate.item);
+  }
+  return accepted;
 }
 
 function drivewayObservation(
@@ -265,8 +394,26 @@ function drivewayObservation(
     ];
     const road = nearestPointOnRoad(midpoint, features);
     if (!road || road.distance < 2 || road.distance > 45) continue;
+    const routeX =
+      (road.point[0] - midpoint[0]) *
+      METERS_PER_LATITUDE_DEGREE *
+      Math.cos((latitude * Math.PI) / 180);
+    const routeY = (road.point[1] - midpoint[1]) * METERS_PER_LATITUDE_DEGREE;
+    const routeLength = Math.max(1e-9, Math.hypot(routeX, routeY));
+    const routeNormal = { x: -routeY / routeLength, y: routeX / routeLength };
+    const roadNormal = { x: -road.direction.y, y: road.direction.x };
+    const endClearance =
+      road.width / 2 +
+      Math.abs(routeNormal.x * roadNormal.x + routeNormal.y * roadNormal.y) *
+        1.35;
+    const roadEdge = offsetFromRoad(
+      midpoint,
+      road,
+      endClearance + 0.03,
+      midpoint,
+    );
     const start = imagePoint(midpoint, bounds, image),
-      end = imagePoint(road.point, bounds, image);
+      end = imagePoint(roadEdge, bounds, image);
     let surface = 0;
     const samples = 18;
     for (let sample = 2; sample < samples - 2; sample++) {
@@ -282,7 +429,7 @@ function drivewayObservation(
     }
     const score = surface / (samples - 4);
     if (!best || score > best.score)
-      best = { wall, road: road.point, roadId: road.roadId, score };
+      best = { wall, road: roadEdge, roadId: road.roadId, score };
   }
   return best;
 }
@@ -291,6 +438,7 @@ function landscapingObservation(
   image: DecodedImage,
   bounds: Bounds,
   ring: MapPoint[],
+  features: NormalizedFeature[],
 ) {
   const stride = 3;
   const columns = Math.floor(image.width / stride),
@@ -368,7 +516,7 @@ function landscapingObservation(
       (((bounds.north - bounds.south) * METERS_PER_LATITUDE_DEGREE) /
         image.height),
   );
-  return components
+  const candidates = components
     .map((component, index) => {
       const radius =
         Math.sqrt((component.cells * stride * stride) / Math.PI) *
@@ -389,8 +537,8 @@ function landscapingObservation(
       };
     })
     .filter((item) => item.crownRadius <= 8)
-    .sort((a, b) => b.crownRadius - a.crownRadius)
-    .slice(0, 16);
+    .sort((a, b) => b.crownRadius - a.crownRadius);
+  return protectRoads(candidates, features, ring).slice(0, 16);
 }
 
 export async function analyzeAerialImage(
@@ -417,7 +565,7 @@ export async function analyzeAerialImage(
     throw new Error("The selected building has no usable exterior footprint.");
   const roof = roofObservation(image, bounds, ring);
   const driveway = drivewayObservation(image, bounds, ring, features);
-  const landscaping = landscapingObservation(image, bounds, ring);
+  const landscaping = landscapingObservation(image, bounds, ring, features);
   const analyzedAt = new Date().toISOString();
   const base = BuildingCustomizationSchema.parse(
     existing ?? {

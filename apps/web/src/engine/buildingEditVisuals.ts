@@ -5,7 +5,13 @@ import {
   type WorldDefinition,
 } from "@osm3d/contracts";
 import type { BuildingPlan, LocalPoint2, WorldPlan } from "@osm3d/worldgen";
-import { openingPosition, routeHeight, toLocal } from "./buildingEdits.js";
+import {
+  openingPosition,
+  roadSafeLandscapePoint,
+  routeHeight,
+  toLocal,
+  trimRouteToRoadEdge,
+} from "./buildingEdits.js";
 
 export function customizedPlan(
   building: BuildingPlan,
@@ -133,11 +139,16 @@ export function createCustomizationVisual(
     }
     handle(panel, y, { openingId: opening.id });
     if (opening.path.length >= 2) {
-      const points = [
-        panel,
-        ...opening.path.slice(1).map((point) => toLocal(point, definition)),
-      ];
       const width = opening.kind === "garage" ? openingWidth(opening) : 1.2;
+      const points = trimRouteToRoadEdge(
+        [
+          panel,
+          ...opening.path.slice(1).map((point) => toLocal(point, definition)),
+        ],
+        width,
+        plan,
+        opening.roadId,
+      );
       const vertices: number[] = [];
       const colors: number[] = [];
       const uvs: number[] = [];
@@ -192,11 +203,7 @@ export function createCustomizationVisual(
               Math.floor(startDistance / 3) !== Math.floor(endDistance / 3);
             const shade = new THREE.Color(joint ? 0x5f615d : 0x8b8c85);
             if (!joint)
-              shade.offsetHSL(
-                0,
-                0,
-                ((((i + index * 17) * 29) % 11) - 5) / 160,
-              );
+              shade.offsetHSL(0, 0, ((((i + index * 17) * 29) % 11) - 5) / 160);
             for (let vertex = 0; vertex < 6; vertex++)
               colors.push(shade.r, shade.g, shade.b);
           }
@@ -282,8 +289,50 @@ export function createCustomizationVisual(
       }),
     );
   });
-  (value.landscaping ?? []).forEach((item) => {
-    const point = toLocal(item.point, definition);
+  const buildingCenter = building.rings[0]?.reduce(
+    (center, point) => ({
+      x: center.x + point.x / building.rings[0]!.length,
+      z: center.z + point.z / building.rings[0]!.length,
+    }),
+    { x: 0, z: 0 },
+  );
+  const preparedLandscaping = (value.landscaping ?? []).map((item) => ({
+    item,
+    ...roadSafeLandscapePoint(
+      toLocal(item.point, definition),
+      item.crownRadius,
+      plan,
+      buildingCenter,
+    ),
+  }));
+  const acceptedLandscaping: typeof preparedLandscaping = [];
+  preparedLandscaping.forEach((candidate, index) => {
+    if (candidate.moved && candidate.item.kind === "tree") {
+      const threshold = (radius: number) =>
+        Math.max(2.5, (candidate.item.crownRadius + radius) * 0.65);
+      const nearbyExistingTree = preparedLandscaping.some(
+        (other, otherIndex) =>
+          otherIndex !== index &&
+          !other.moved &&
+          other.item.kind === "tree" &&
+          Math.hypot(
+            candidate.point.x - other.point.x,
+            candidate.point.z - other.point.z,
+          ) < threshold(other.item.crownRadius),
+      );
+      const nearbyAcceptedTree = acceptedLandscaping.some(
+        (other) =>
+          other.item.kind === "tree" &&
+          Math.hypot(
+            candidate.point.x - other.point.x,
+            candidate.point.z - other.point.z,
+          ) < threshold(other.item.crownRadius),
+      );
+      if (nearbyExistingTree || nearbyAcceptedTree) return;
+    }
+    acceptedLandscaping.push(candidate);
+  });
+  acceptedLandscaping.forEach(({ item, point }) => {
     const ground = routeHeight(point, plan);
     if (item.kind === "tree") {
       const trunkHeight = Math.max(1.2, item.height * 0.42);

@@ -11,7 +11,9 @@ import {
   exteriorWalls,
   nearestWall,
   openingPosition,
+  roadSafeLandscapePoint,
   routeBlocked,
+  trimRouteToRoadEdge,
   toLocal,
   toMap,
 } from "./buildingEdits.js";
@@ -196,6 +198,88 @@ describe("building editing geometry", () => {
       expect(local.at(-1)!.z).toBeGreaterThan(15);
       expect(local.at(-1)!.z).toBeLessThan(22);
     }
+  });
+  it("moves landscaping beyond the road surface and its crown clearance", () => {
+    const roadPlan = plan.roads[0]!;
+    const a = roadPlan.points[0]!,
+      b = roadPlan.points[1]!;
+    const center = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+    const safe = roadSafeLandscapePoint(center, 2, plan);
+    expect(safe.moved).toBe(true);
+    expect(
+      Math.hypot(safe.point.x - center.x, safe.point.z - center.z),
+    ).toBeCloseTo(roadPlan.width / 2 + 2 + 0.35, 5);
+  });
+  it("drops a relocated tree when a tree already occupies the road edge", () => {
+    const roadPlan = plan.roads[0]!;
+    const a = roadPlan.points[0]!,
+      b = roadPlan.points[1]!;
+    const center = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+    const buildingCenter = plan.buildings[0]!.rings[0]!.reduce(
+      (value, point) => ({
+        x: value.x + point.x / plan.buildings[0]!.rings[0]!.length,
+        z: value.z + point.z / plan.buildings[0]!.rings[0]!.length,
+      }),
+      { x: 0, z: 0 },
+    );
+    const edge = roadSafeLandscapePoint(center, 2, plan, buildingCenter).point;
+    const visual = createCustomizationVisual(
+      plan.buildings[0]!,
+      {
+        sourceId: "house",
+        revision: 0,
+        footprint: footprintSignature(house.geometry),
+        openings: [],
+        appearance: {},
+        boundaries: [],
+        landscaping: [
+          {
+            id: "tree-on-road",
+            kind: "tree",
+            point: toMap(center, definition),
+            crownRadius: 2,
+            height: 6,
+            confidence: 0.8,
+          },
+          {
+            id: "tree-at-edge",
+            kind: "tree",
+            point: toMap(edge, definition),
+            crownRadius: 2,
+            height: 6,
+            confidence: 0.8,
+          },
+        ],
+      },
+      definition,
+      plan,
+      false,
+    );
+    expect(visual.children).toHaveLength(2);
+  });
+  it("trims a driveway at the near road edge", () => {
+    const roadPlan = plan.roads[0]!;
+    const a = roadPlan.points[0]!,
+      b = roadPlan.points[1]!;
+    const center = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+    const direction = { x: b.x - a.x, z: b.z - a.z };
+    const length = Math.hypot(direction.x, direction.z);
+    const normal = { x: -direction.z / length, z: direction.x / length };
+    const start = {
+      x: center.x + normal.x * 20,
+      z: center.z + normal.z * 20,
+    };
+    const trimmed = trimRouteToRoadEdge(
+      [start, center],
+      2.7,
+      plan,
+      roadPlan.sourceId,
+    );
+    const end = trimmed.at(-1)!;
+    expect(Math.hypot(end.x - center.x, end.z - center.z)).toBeCloseTo(
+      roadPlan.width / 2 + 0.03,
+      5,
+    );
   });
   it("rejects a route through a neighboring building, including clearance", () => {
     const neighbor = {

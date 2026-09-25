@@ -83,9 +83,25 @@ describe("aerial building analysis", () => {
     );
     expect(proposal.observations.driveway?.detected).toBe(true);
     expect(proposal.proposedCustomization.openings).toHaveLength(1);
+    const drivewayEnd =
+      proposal.proposedCustomization.openings[0]!.path.at(-1)!;
+    const roadLongitude = fromPixel(332, 250)[0];
+    const longitudeScale = 111_320 * Math.cos((drivewayEnd[1] * Math.PI) / 180);
+    expect(
+      Math.abs(drivewayEnd[0] - roadLongitude) * longitudeScale,
+    ).toBeCloseTo(3.53, 1);
     expect(proposal.proposedCustomization.landscaping.length).toBeGreaterThan(
       0,
     );
+    proposal.proposedCustomization.landscaping.forEach((item) => {
+      const distanceToRoad =
+        Math.abs(item.point[0] - roadLongitude) *
+        111_320 *
+        Math.cos((item.point[1] * Math.PI) / 180);
+      expect(distanceToRoad).toBeGreaterThanOrEqual(
+        3.5 + item.crownRadius + 0.34,
+      );
+    });
     expect(proposal.imagery.previewDataUrl).toMatch(
       /^data:image\/jpeg;base64,/,
     );
