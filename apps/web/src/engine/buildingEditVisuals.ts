@@ -48,15 +48,21 @@ export function createCustomizationVisual(
 ): THREE.Group {
   const group = new THREE.Group();
   group.name = "Building customizations";
-  const addMesh = (geometry: THREE.BufferGeometry, color: number) => {
-    const mesh = new THREE.Mesh(
-      geometry,
-      new THREE.MeshStandardMaterial({
-        color,
-        roughness: 0.85,
-        side: THREE.DoubleSide,
-      }),
-    );
+  const addMesh = (
+    geometry: THREE.BufferGeometry,
+    color: number,
+    options?: { surface?: boolean; vertexColors?: boolean },
+  ) => {
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      roughness: options?.surface ? 0.96 : 0.85,
+      side: THREE.DoubleSide,
+      vertexColors: Boolean(options?.vertexColors),
+      polygonOffset: Boolean(options?.surface),
+      polygonOffsetFactor: options?.surface ? -2 : 0,
+      polygonOffsetUnits: options?.surface ? -2 : 0,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
     mesh.userData.sourceId = building.sourceId;
     mesh.userData.featureKind = "building";
     group.add(mesh);
@@ -133,6 +139,9 @@ export function createCustomizationVisual(
       ];
       const width = opening.kind === "garage" ? openingWidth(opening) : 1.2;
       const vertices: number[] = [];
+      const colors: number[] = [];
+      const uvs: number[] = [];
+      let travelled = 0;
       points.slice(1).forEach((b, index) => {
         const a = points[index]!;
         const length = Math.hypot(b.x - a.x, b.z - a.z);
@@ -164,6 +173,8 @@ export function createCustomizationVisual(
           ];
         };
         for (let i = 0; i < steps; i++) {
+          const startDistance = travelled + (length * i) / steps;
+          const endDistance = travelled + (length * (i + 1)) / steps;
           const aLeft = station(i / steps, -1),
             aRight = station(i / steps, 1),
             bLeft = station((i + 1) / steps, -1),
@@ -176,19 +187,57 @@ export function createCustomizationVisual(
             ...bRight,
             ...bLeft,
           );
+          if (opening.kind === "garage") {
+            const joint =
+              Math.floor(startDistance / 3) !== Math.floor(endDistance / 3);
+            const shade = new THREE.Color(joint ? 0x5f615d : 0x8b8c85);
+            if (!joint)
+              shade.offsetHSL(
+                0,
+                0,
+                ((((i + index * 17) * 29) % 11) - 5) / 160,
+              );
+            for (let vertex = 0; vertex < 6; vertex++)
+              colors.push(shade.r, shade.g, shade.b);
+          }
+          uvs.push(
+            0,
+            startDistance / 3,
+            1,
+            startDistance / 3,
+            1,
+            endDistance / 3,
+            0,
+            startDistance / 3,
+            1,
+            endDistance / 3,
+            0,
+            endDistance / 3,
+          );
         }
+        travelled += length;
       });
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute(
         "position",
         new THREE.Float32BufferAttribute(vertices, 3),
       );
+      geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+      if (colors.length)
+        geometry.setAttribute(
+          "color",
+          new THREE.Float32BufferAttribute(colors, 3),
+        );
       geometry.computeVertexNormals();
       const mesh = addMesh(
         geometry,
-        opening.kind === "garage" ? 0xa7a59d : 0xc1b399,
+        opening.kind === "garage" ? 0xffffff : 0xc1b399,
+        opening.kind === "garage"
+          ? { surface: true, vertexColors: true }
+          : { surface: true },
       );
       mesh.receiveShadow = true;
+      mesh.renderOrder = 2;
       mesh.userData.route = true;
       points.slice(1).forEach((point, index) =>
         handle(point, routeHeight(point, plan) + 0.3, {

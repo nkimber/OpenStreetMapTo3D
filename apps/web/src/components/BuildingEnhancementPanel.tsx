@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   BuildingCustomization,
   BuildingEnhancementProposal,
@@ -6,12 +6,13 @@ import type {
   WorldDefinition,
 } from "@osm3d/contracts";
 import { api } from "../api.js";
-import type { WorldEngine } from "../engine/WorldEngine.js";
 
 interface BuildingEnhancementPanelProps {
   definition: WorldDefinition;
   feature: NormalizedFeature;
-  engine: WorldEngine;
+  proposal: BuildingEnhancementProposal | undefined;
+  proposalCount: number;
+  onProposalChange: (proposal?: BuildingEnhancementProposal) => void;
   onDefinitionChange: (definition: WorldDefinition) => void;
   onClose: () => void;
 }
@@ -30,42 +31,25 @@ function confidence(value: number | undefined) {
 export function BuildingEnhancementPanel({
   definition,
   feature,
-  engine,
+  proposal,
+  proposalCount,
+  onProposalChange,
   onDefinitionChange,
   onClose,
 }: BuildingEnhancementPanelProps) {
-  const [proposal, setProposal] = useState<BuildingEnhancementProposal>();
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const appliedRef = useRef(false);
   const saved = useMemo(
     () => definition.buildingCustomizations ?? [],
     [definition.buildingCustomizations],
   );
 
-  useEffect(() => {
-    setProposal(undefined);
-    setError(undefined);
-    appliedRef.current = false;
-  }, [feature.sourceId]);
-
-  useEffect(() => {
-    if (!proposal) return;
-    engine.setCustomizationPreview(
-      replaceCustomization(saved, proposal.proposedCustomization),
-    );
-    return () => {
-      if (!appliedRef.current) engine.setCustomizationPreview(saved);
-    };
-  }, [engine, proposal, saved]);
-
   const analyze = async () => {
-    appliedRef.current = false;
     setAnalyzing(true);
     setError(undefined);
     try {
-      setProposal(
+      onProposalChange(
         await api.createBuildingEnhancement(
           definition.world.id,
           feature.sourceId,
@@ -93,13 +77,11 @@ export function BuildingEnhancementPanel({
         proposal.proposedCustomization,
       );
       const nextValues = replaceCustomization(saved, customization);
-      appliedRef.current = true;
-      engine.setCustomizationPreview(nextValues);
       onDefinitionChange({
         ...definition,
         buildingCustomizations: nextValues,
       });
-      setProposal(undefined);
+      onProposalChange(undefined);
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -152,7 +134,8 @@ export function BuildingEnhancementPanel({
           </button>
           <small>
             Uses public-domain USGS NAIP imagery where coverage exists. No
-            change is saved until you apply the preview.
+            change is saved until you apply the preview. Other analyzed
+            buildings remain visible while this world stays open.
           </small>
         </>
       ) : (
@@ -191,10 +174,16 @@ export function BuildingEnhancementPanel({
             </div>
           </dl>
           <p className="enhancement-warning">{proposal.warnings[0]}</p>
+          <small>
+            Unsaved preview · retained while this world stays open
+            {proposalCount > 1
+              ? ` · ${proposalCount} building previews active`
+              : ""}
+          </small>
           <div className="enhancement-actions">
             <button
               type="button"
-              onClick={() => setProposal(undefined)}
+              onClick={() => onProposalChange(undefined)}
               disabled={saving}
             >
               Discard
@@ -205,7 +194,7 @@ export function BuildingEnhancementPanel({
               onClick={() => void apply()}
               disabled={saving}
             >
-              {saving ? "Applying…" : "Apply enhancement"}
+              {saving ? "Saving…" : "Save enhancement"}
             </button>
           </div>
           <small>

@@ -115,6 +115,14 @@ describe("building editing geometry", () => {
       (item) => item.userData.route,
     ) as THREE.Mesh;
     const vertices = surface.geometry.getAttribute("position");
+    const colors = surface.geometry.getAttribute("color");
+    const material = surface.material as THREE.MeshStandardMaterial;
+    expect(colors.count).toBe(vertices.count);
+    expect(material.vertexColors).toBe(true);
+    expect(material.polygonOffset).toBe(true);
+    expect(
+      new Set(Array.from(colors.array).map((value) => value.toFixed(3))).size,
+    ).toBeGreaterThan(1);
     expect(vertices.getY(0)).toBeCloseTo(building.baseHeight + 0.04, 5);
     expect(vertices.getY(1)).toBeCloseTo(building.baseHeight + 0.04, 5);
     const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });

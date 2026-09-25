@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  BuildingEnhancementProposal,
   Diagnostic,
   NormalizedFeature,
   WorldBuildProgress,
@@ -11,6 +12,7 @@ import {
   estimateRoadWidthWithSource,
 } from "@osm3d/worldgen";
 import { api } from "../api.js";
+import { mergeEnhancementPreviews } from "../enhancementPreviews.js";
 import { DriveMiniMap } from "./DriveMiniMap.js";
 import { Garage } from "./Garage.js";
 import { BuildingEditor } from "./BuildingEditor.js";
@@ -114,6 +116,9 @@ export function WorldWorkspace({
   const modeRef = useRef(mode);
   modeRef.current = mode;
   const [selection, setSelection] = useState<EngineSelection>({});
+  const [enhancementProposals, setEnhancementProposals] = useState<
+    Record<string, BuildingEnhancementProposal>
+  >({});
   const [stats, setStats] = useState(emptyStats);
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>(
     definition.diagnostics,
@@ -155,6 +160,14 @@ export function WorldWorkspace({
   const selectedRaceCandidate = raceCandidates.find(
     (course) => course.id === selectedRaceCourseId,
   );
+  const previewCustomizations = useMemo(
+    () =>
+      mergeEnhancementPreviews(
+        definition.buildingCustomizations ?? [],
+        enhancementProposals,
+      ),
+    [definition.buildingCustomizations, enhancementProposals],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -167,6 +180,7 @@ export function WorldWorkspace({
     setBuildProgress(undefined);
     setUndoStack([]);
     setRedoStack([]);
+    setEnhancementProposals({});
     void WorldEngine.create(
       container,
       definition,
@@ -213,6 +227,11 @@ export function WorldWorkspace({
       engineRef.current = null;
     };
   }, [definition.world.id]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    engineRef.current?.setCustomizationPreview(previewCustomizations);
+  }, [engineReady, previewCustomizations]);
 
   useEffect(() => {
     engineRef.current?.setMode(mode);
@@ -650,6 +669,13 @@ export function WorldWorkspace({
               WASD / arrows · Space handbrake · R safe reset · Click a building
               to enhance
             </span>
+            {Object.keys(enhancementProposals).length > 0 && (
+              <small>
+                {Object.keys(enhancementProposals).length} unsaved building
+                {Object.keys(enhancementProposals).length === 1 ? "" : "s"}{" "}
+                retained in this preview
+              </small>
+            )}
             <div className="drive-actions">
               <button
                 className={stats.race ? "race-cancel" : "race-start"}
@@ -712,7 +738,17 @@ export function WorldWorkspace({
               <BuildingEnhancementPanel
                 definition={definition}
                 feature={selected}
-                engine={engineRef.current}
+                proposal={enhancementProposals[selected.sourceId]}
+                proposalCount={Object.keys(enhancementProposals).length}
+                onProposalChange={(proposal) =>
+                  setEnhancementProposals((current) => {
+                    if (proposal)
+                      return { ...current, [selected.sourceId]: proposal };
+                    const next = { ...current };
+                    delete next[selected.sourceId];
+                    return next;
+                  })
+                }
                 onDefinitionChange={onDefinitionChange}
                 onClose={() => setSelection({})}
               />
