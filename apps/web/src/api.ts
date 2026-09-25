@@ -5,6 +5,7 @@ import type {
   ImportJob,
   ImportRequest,
   SnapshotPreview,
+  SceneEnhancementTile,
   WorldCreateRequest,
   WorldDefinition,
   WorldOverride,
@@ -46,6 +47,18 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  async createSceneEnhancement(
+    id: string,
+    center: [number, number],
+    sizeMeters = 200,
+    signal?: AbortSignal,
+  ): Promise<SceneEnhancementTile> {
+    return apiFetch(`/worlds/${id}/scene-enhancement`, {
+      method: "POST",
+      body: JSON.stringify({ center, sizeMeters }),
+      ...(signal ? { signal } : {}),
+    });
+  },
   async createBuildingEnhancement(
     id: string,
     sourceId: string,

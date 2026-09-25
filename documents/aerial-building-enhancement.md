@@ -2,7 +2,7 @@
 
 Status: Proof of concept
 
-Last updated: 2026-09-24
+Last updated: 2026-09-25
 
 ## User experience
 
@@ -17,6 +17,18 @@ saved model.
 Building picking is disabled while race setup or a race is active so the
 interaction does not compete with driving and race controls.
 
+Drive mode also enables **Auto enhance** by default. The world is divided into
+stable 200 metre squares aligned to its geographic anchor. The square containing
+the car is queued immediately; once the car enters the 100 metre approach band,
+the adjacent square in its heading direction is prefetched. Completed squares
+are remembered for the open world, so turning around does not analyze them
+again. The Drive panel reports queued/completed squares and the number of
+buildings updated, and the feature can be paused at any time.
+
+Automatic results are live, unsaved previews. Saved customizations and explicit
+per-building previews take precedence, and all automatic previews already
+applied remain visible when another square completes.
+
 ## Data source and processing
 
 The server requests a 512 × 512 natural-colour crop from the configured
@@ -25,6 +37,14 @@ Program ImageServer. NAIP imagery is a United States government product and is
 public domain; availability and vintage vary by location. The provider,
 license, analysis time, source URL and confidence values are saved with the
 building customization.
+
+For automatic driving enhancement, the server downloads one 1024 × 1024 image
+covering the 200 metre square plus a 30 metre context apron. It derives a local
+512 × 512 crop for each building before running the same analyzer. This keeps
+the established per-building resolution and road-safety behavior without one
+network image request per house. A tile is capped at 60 new buildings, skips
+already-saved customizations, and de-duplicates overlapping vegetation
+candidates across neighboring properties.
 
 The browser never supplies a provider URL. The API caps the buffer to 10–60 m,
 uses a 20 second timeout, accepts only image responses and rejects responses
@@ -62,12 +82,14 @@ to the browser.
 
 ## Verification
 
-The analyzer has a synthetic-image test covering schema validation, roof
+The analyzer has synthetic-image tests covering schema validation, roof
 appearance, driveway proposal, vegetation extraction and embedded preview
-generation. Shared-contract tests cover persisted evidence, roof orientation
-and landscaping defaults. Browser acceptance should additionally verify
-building picking, preview/discard and persistence against a live NAIP-covered
-world.
+generation, plus shared-image tile processing. Shared-contract tests cover
+persisted evidence, roof orientation, landscaping defaults and the tile result.
+Client tests cover stable tile identity, directional prefetch and precedence
+between saved, automatic and explicit previews. Browser acceptance should
+additionally verify building picking, preview/discard and persistence against a
+live NAIP-covered world.
 
 ## References
 

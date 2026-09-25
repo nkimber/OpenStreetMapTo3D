@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  BuildingCustomization,
   BuildingEnhancementProposal,
   Diagnostic,
   NormalizedFeature,
@@ -13,6 +14,13 @@ import {
 } from "@osm3d/worldgen";
 import { api } from "../api.js";
 import { mergeEnhancementPreviews } from "../enhancementPreviews.js";
+import {
+  centerInsideBounds,
+  DRIVE_ENHANCEMENT_TILE_METERS,
+  enhancementTileCenter,
+  enhancementTileKey,
+  enhancementTilesForPose,
+} from "../driveEnhancement.js";
 import { DriveMiniMap } from "./DriveMiniMap.js";
 import { Garage } from "./Garage.js";
 import { BuildingEditor } from "./BuildingEditor.js";
@@ -91,6 +99,20 @@ function cloneOverrides(overrides: WorldOverride[]): WorldOverride[] {
   return structuredClone(overrides);
 }
 
+interface DriveEnhancementProgress {
+  activeTile?: string;
+  queuedTiles: number;
+  completedTiles: number;
+  enhancedBuildings: number;
+  error?: string;
+}
+
+const emptyDriveEnhancementProgress: DriveEnhancementProgress = {
+  queuedTiles: 0,
+  completedTiles: 0,
+  enhancedBuildings: 0,
+};
+
 export function WorldWorkspace({
   definition,
   onDefinitionChange,
@@ -119,6 +141,30 @@ export function WorldWorkspace({
   const [enhancementProposals, setEnhancementProposals] = useState<
     Record<string, BuildingEnhancementProposal>
   >({});
+  const [automaticEnhancements, setAutomaticEnhancements] = useState<
+    Record<string, BuildingCustomization>
+  >({});
+  const [automaticEnhancementEnabled, setAutomaticEnhancementEnabled] =
+    useState(() => {
+      try {
+        return localStorage.getItem("streetrove.driveEnhancement") !== "false";
+      } catch {
+        return true;
+      }
+    });
+  const automaticEnhancementActiveRef = useRef(
+    automaticEnhancementEnabled && mode === "drive",
+  );
+  automaticEnhancementActiveRef.current =
+    automaticEnhancementEnabled && mode === "drive";
+  const enhancementQueueRef = useRef<
+    Array<{ key: string; center: [number, number] }>
+  >([]);
+  const enhancementSeenRef = useRef(new Set<string>());
+  const enhancementRunningRef = useRef(false);
+  const enhancementAbortRef = useRef<AbortController | undefined>(undefined);
+  const [driveEnhancementProgress, setDriveEnhancementProgress] =
+    useState<DriveEnhancementProgress>(emptyDriveEnhancementProgress);
   const [stats, setStats] = useState(emptyStats);
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>(
     definition.diagnostics,
@@ -165,9 +211,131 @@ export function WorldWorkspace({
       mergeEnhancementPreviews(
         definition.buildingCustomizations ?? [],
         enhancementProposals,
+        Object.values(automaticEnhancements),
       ),
-    [definition.buildingCustomizations, enhancementProposals],
+    [
+      automaticEnhancements,
+      definition.buildingCustomizations,
+      enhancementProposals,
+    ],
   );
+
+  const drainEnhancementQueue = useCallback(async () => {
+    if (enhancementRunningRef.current || !automaticEnhancementActiveRef.current)
+      return;
+    enhancementRunningRef.current = true;
+    const controller = new AbortController();
+    enhancementAbortRef.current = controller;
+    try {
+      while (
+        automaticEnhancementActiveRef.current &&
+        enhancementQueueRef.current.length > 0
+      ) {
+        const tile = enhancementQueueRef.current.shift()!;
+        setDriveEnhancementProgress((current) => ({
+          activeTile: tile.key,
+          queuedTiles: enhancementQueueRef.current.length,
+          completedTiles: current.completedTiles,
+          enhancedBuildings: current.enhancedBuildings,
+        }));
+        try {
+          const result = await api.createSceneEnhancement(
+            definition.world.id,
+            tile.center,
+            DRIVE_ENHANCEMENT_TILE_METERS,
+            controller.signal,
+          );
+          setAutomaticEnhancements((current) => {
+            const next = { ...current };
+            result.customizations.forEach((value) => {
+              next[value.sourceId] = value;
+            });
+            return next;
+          });
+          setDriveEnhancementProgress((current) => ({
+            ...current,
+            completedTiles: current.completedTiles + 1,
+            enhancedBuildings:
+              current.enhancedBuildings + result.analyzedBuildings,
+          }));
+        } catch (reason) {
+          if (controller.signal.aborted) {
+            enhancementSeenRef.current.delete(tile.key);
+            break;
+          }
+          setDriveEnhancementProgress((current) => ({
+            ...current,
+            error:
+              reason instanceof Error
+                ? reason.message
+                : "A driving enhancement tile could not be analyzed.",
+          }));
+        }
+      }
+    } finally {
+      enhancementRunningRef.current = false;
+      enhancementAbortRef.current = undefined;
+      setDriveEnhancementProgress((current) => ({
+        queuedTiles: enhancementQueueRef.current.length,
+        completedTiles: current.completedTiles,
+        enhancedBuildings: current.enhancedBuildings,
+        ...(current.error ? { error: current.error } : {}),
+      }));
+      if (
+        automaticEnhancementActiveRef.current &&
+        enhancementQueueRef.current.length > 0
+      )
+        void drainEnhancementQueue();
+    }
+  }, [definition.world.id]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "streetrove.driveEnhancement",
+        String(automaticEnhancementEnabled),
+      );
+    } catch {
+      // Automatic enhancement still works when preferences cannot be stored.
+    }
+    if (!automaticEnhancementEnabled) enhancementAbortRef.current?.abort();
+  }, [automaticEnhancementEnabled]);
+
+  useEffect(() => {
+    if (mode !== "drive") enhancementAbortRef.current?.abort();
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode !== "drive" || !automaticEnhancementEnabled || !engineReady)
+      return;
+    const tiles = enhancementTilesForPose(
+      stats.vehicleMapPose,
+      definition.world.anchor,
+    );
+    for (const tile of tiles) {
+      const key = enhancementTileKey(tile);
+      if (enhancementSeenRef.current.has(key)) continue;
+      const center = enhancementTileCenter(tile, definition.world.anchor);
+      if (!centerInsideBounds(center, definition.world.bounds)) continue;
+      enhancementSeenRef.current.add(key);
+      enhancementQueueRef.current.push({ key, center });
+    }
+    setDriveEnhancementProgress((current) => ({
+      ...current,
+      queuedTiles: enhancementQueueRef.current.length,
+    }));
+    void drainEnhancementQueue();
+  }, [
+    automaticEnhancementEnabled,
+    definition.world.anchor,
+    definition.world.bounds,
+    drainEnhancementQueue,
+    engineReady,
+    mode,
+    stats.vehicleMapPose.headingDegrees,
+    stats.vehicleMapPose.latitude,
+    stats.vehicleMapPose.longitude,
+  ]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -181,6 +349,12 @@ export function WorldWorkspace({
     setUndoStack([]);
     setRedoStack([]);
     setEnhancementProposals({});
+    setAutomaticEnhancements({});
+    enhancementAbortRef.current?.abort();
+    enhancementQueueRef.current = [];
+    enhancementSeenRef.current.clear();
+    enhancementRunningRef.current = false;
+    setDriveEnhancementProgress(emptyDriveEnhancementProgress);
     void WorldEngine.create(
       container,
       definition,
@@ -223,6 +397,7 @@ export function WorldWorkspace({
       cancelled = true;
       controller.abort();
       updateAbortRef.current?.abort();
+      enhancementAbortRef.current?.abort();
       engineRef.current?.dispose();
       engineRef.current = null;
     };
@@ -676,7 +851,32 @@ export function WorldWorkspace({
                 retained in this preview
               </small>
             )}
+            {automaticEnhancementEnabled && (
+              <small role="status">
+                {driveEnhancementProgress.activeTile
+                  ? `Enhancing the area ahead · ${driveEnhancementProgress.queuedTiles} queued`
+                  : `${driveEnhancementProgress.completedTiles} driving areas enhanced`}
+                {driveEnhancementProgress.enhancedBuildings > 0
+                  ? ` · ${driveEnhancementProgress.enhancedBuildings} buildings updated`
+                  : ""}
+              </small>
+            )}
+            {driveEnhancementProgress.error && (
+              <small className="drive-enhancement-error" role="alert">
+                {driveEnhancementProgress.error}
+              </small>
+            )}
             <div className="drive-actions">
+              <button
+                aria-pressed={automaticEnhancementEnabled}
+                className={automaticEnhancementEnabled ? "active" : ""}
+                onClick={() =>
+                  setAutomaticEnhancementEnabled((enabled) => !enabled)
+                }
+                title="Analyze 200 metre aerial tiles around the car"
+              >
+                Auto enhance {automaticEnhancementEnabled ? "on" : "off"}
+              </button>
               <button
                 className={stats.race ? "race-cancel" : "race-start"}
                 disabled={racePreparing}

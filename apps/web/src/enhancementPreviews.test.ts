@@ -67,4 +67,19 @@ describe("mergeEnhancementPreviews", () => {
       }),
     ).toEqual([savedSecond, previewFirst]);
   });
+
+  it("merges automatic tile results while manual previews keep precedence", () => {
+    const savedFirst = customization("building:first", "flat");
+    const savedSecond = customization("building:second", "flat");
+    const automaticFirst = customization("building:first", "hipped");
+    const previewFirst = customization("building:first", "gabled");
+
+    expect(
+      mergeEnhancementPreviews(
+        [savedFirst, savedSecond],
+        { [previewFirst.sourceId]: proposal(previewFirst) },
+        [automaticFirst],
+      ),
+    ).toEqual([savedSecond, previewFirst]);
+  });
 });

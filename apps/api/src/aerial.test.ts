@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
 import {
   BuildingEnhancementProposalSchema,
+  SceneEnhancementTileSchema,
   type MapPoint,
   type NormalizedFeature,
 } from "@osm3d/contracts";
-import { analyzeAerialImage } from "./aerial.js";
+import type { AppConfig } from "./config.js";
+import { analyzeAerialImage, createSceneEnhancementTile } from "./aerial.js";
 
 const bounds = {
   west: -75.001,
@@ -51,6 +53,13 @@ const road: NormalizedFeature = {
   facts: {},
   warnings: [],
 };
+
+const config = {
+  USGS_NAIP_BASE_URL: "https://example.test/exportImage",
+  OSM_USER_AGENT: "StreetRove/test",
+} as AppConfig;
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("aerial building analysis", () => {
   it("derives a bounded, schema-valid enhancement proposal", async () => {
@@ -105,5 +114,36 @@ describe("aerial building analysis", () => {
     expect(proposal.imagery.previewDataUrl).toMatch(
       /^data:image\/jpeg;base64,/,
     );
+  });
+
+  it("uses one shared aerial image to enhance a 200 metre driving tile", async () => {
+    const bytes = await sharp({
+      create: {
+        width: 1024,
+        height: 1024,
+        channels: 3,
+        background: "#8a9875",
+      },
+    })
+      .jpeg()
+      .toBuffer();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(bytes, { headers: { "content-type": "image/jpeg" } }),
+      );
+
+    const tile = await createSceneEnhancementTile(
+      [-75, 40],
+      200,
+      [building, road],
+      [],
+      config,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(SceneEnhancementTileSchema.safeParse(tile).success).toBe(true);
+    expect(tile.analyzedBuildings).toBe(1);
+    expect(tile.customizations[0]?.sourceId).toBe(building.sourceId);
   });
 });

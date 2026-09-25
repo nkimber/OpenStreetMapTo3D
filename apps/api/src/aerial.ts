@@ -7,10 +7,14 @@ import {
   type LandscapingFeature,
   type MapPoint,
   type NormalizedFeature,
+  type SceneEnhancementTile,
 } from "@osm3d/contracts";
 import type { AppConfig } from "./config.js";
 
 const IMAGE_SIZE = 512;
+const TILE_IMAGE_SIZE = 1024;
+const TILE_BUILDING_BUFFER_METERS = 30;
+const MAX_TILE_BUILDINGS = 60;
 const METERS_PER_LATITUDE_DEGREE = 111_320;
 const ATTRIBUTION = "USGS The National Map — NAIP imagery";
 const LICENSE = "Public domain (United States government work)";
@@ -44,6 +48,48 @@ interface DecodedImage {
   width: number;
   height: number;
   channels: number;
+}
+
+function featureCenter(feature: NormalizedFeature): MapPoint | undefined {
+  const ring = exteriorRing(feature);
+  const points =
+    ring.length > 1 &&
+    ring[0]![0] === ring.at(-1)![0] &&
+    ring[0]![1] === ring.at(-1)![1]
+      ? ring.slice(0, -1)
+      : ring;
+  if (!points.length) return undefined;
+  return points.reduce<MapPoint>(
+    (center, point) => [
+      center[0] + point[0] / points.length,
+      center[1] + point[1] / points.length,
+    ],
+    [0, 0],
+  );
+}
+
+function squareBounds(center: MapPoint, sizeMeters: number): Bounds {
+  const half = sizeMeters / 2;
+  const latitudePadding = half / METERS_PER_LATITUDE_DEGREE;
+  const longitudePadding =
+    half /
+    (METERS_PER_LATITUDE_DEGREE *
+      Math.max(0.2, Math.cos((center[1] * Math.PI) / 180)));
+  return {
+    west: center[0] - longitudePadding,
+    south: center[1] - latitudePadding,
+    east: center[0] + longitudePadding,
+    north: center[1] + latitudePadding,
+  };
+}
+
+function boundsContain(bounds: Bounds, point: MapPoint): boolean {
+  return (
+    point[0] >= bounds.west &&
+    point[0] < bounds.east &&
+    point[1] >= bounds.south &&
+    point[1] < bounds.north
+  );
 }
 
 function exteriorRing(feature: NormalizedFeature): MapPoint[] {
@@ -680,6 +726,24 @@ export async function createBuildingEnhancement(
   if (ring.length < 4)
     throw new Error("The selected building has no usable exterior footprint.");
   const bounds = bufferedBounds(ring, bufferMeters);
+  const bytes = await fetchAerialImage(bounds, IMAGE_SIZE, config);
+  const sourceUrl = config.USGS_NAIP_BASE_URL.replace(/\/exportImage\/?$/, "");
+  return analyzeAerialImage(
+    bytes,
+    bounds,
+    feature,
+    features,
+    existing,
+    bufferMeters,
+    sourceUrl,
+  );
+}
+
+async function fetchAerialImage(
+  bounds: Bounds,
+  imageSize: number,
+  config: AppConfig,
+): Promise<Buffer> {
   const endpoint = new URL(config.USGS_NAIP_BASE_URL);
   endpoint.searchParams.set(
     "bbox",
@@ -687,7 +751,7 @@ export async function createBuildingEnhancement(
   );
   endpoint.searchParams.set("bboxSR", "4326");
   endpoint.searchParams.set("imageSR", "4326");
-  endpoint.searchParams.set("size", `${IMAGE_SIZE},${IMAGE_SIZE}`);
+  endpoint.searchParams.set("size", `${imageSize},${imageSize}`);
   endpoint.searchParams.set("format", "jpgpng");
   endpoint.searchParams.set(
     "renderingRule",
@@ -709,14 +773,178 @@ export async function createBuildingEnhancement(
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length > 8_000_000)
     throw new Error("The aerial image exceeded the 8 MB safety limit.");
-  const sourceUrl = config.USGS_NAIP_BASE_URL.replace(/\/exportImage\/?$/, "");
-  return analyzeAerialImage(
-    bytes,
-    bounds,
-    feature,
-    features,
-    existing,
-    bufferMeters,
-    sourceUrl,
+  return bytes;
+}
+
+async function cropAerialImage(
+  bytes: Buffer,
+  sourceBounds: Bounds,
+  requestedBounds: Bounds,
+): Promise<{ bytes: Buffer; bounds: Bounds }> {
+  const metadata = await sharp(bytes).metadata();
+  const width = metadata.width ?? TILE_IMAGE_SIZE;
+  const height = metadata.height ?? TILE_IMAGE_SIZE;
+  const x = (longitude: number) =>
+    ((longitude - sourceBounds.west) /
+      (sourceBounds.east - sourceBounds.west)) *
+    width;
+  const y = (latitude: number) =>
+    ((sourceBounds.north - latitude) /
+      (sourceBounds.north - sourceBounds.south)) *
+    height;
+  const left = Math.max(
+    0,
+    Math.min(width - 2, Math.floor(x(requestedBounds.west))),
   );
+  const right = Math.max(
+    left + 2,
+    Math.min(width, Math.ceil(x(requestedBounds.east))),
+  );
+  const top = Math.max(
+    0,
+    Math.min(height - 2, Math.floor(y(requestedBounds.north))),
+  );
+  const bottom = Math.max(
+    top + 2,
+    Math.min(height, Math.ceil(y(requestedBounds.south))),
+  );
+  const cropBounds: Bounds = {
+    west:
+      sourceBounds.west +
+      (left / width) * (sourceBounds.east - sourceBounds.west),
+    east:
+      sourceBounds.west +
+      (right / width) * (sourceBounds.east - sourceBounds.west),
+    north:
+      sourceBounds.north -
+      (top / height) * (sourceBounds.north - sourceBounds.south),
+    south:
+      sourceBounds.north -
+      (bottom / height) * (sourceBounds.north - sourceBounds.south),
+  };
+  return {
+    bytes: await sharp(bytes)
+      .extract({ left, top, width: right - left, height: bottom - top })
+      .resize(IMAGE_SIZE, IMAGE_SIZE, { fit: "fill" })
+      .toBuffer(),
+    bounds: cropBounds,
+  };
+}
+
+function distanceMeters(a: MapPoint, b: MapPoint): number {
+  const latitude = ((a[1] + b[1]) / 2) * (Math.PI / 180);
+  return Math.hypot(
+    (a[0] - b[0]) * METERS_PER_LATITUDE_DEGREE * Math.cos(latitude),
+    (a[1] - b[1]) * METERS_PER_LATITUDE_DEGREE,
+  );
+}
+
+/**
+ * Analyze every building whose footprint center lies in a driving tile. The
+ * imagery includes a 30 m apron around the tile so edge buildings still get
+ * the same local context as a manually enhanced building.
+ */
+export async function createSceneEnhancementTile(
+  center: MapPoint,
+  sizeMeters: number,
+  features: NormalizedFeature[],
+  existing: BuildingCustomization[],
+  config: AppConfig,
+): Promise<SceneEnhancementTile> {
+  const tileBounds = squareBounds(center, sizeMeters);
+  const imageryBounds = squareBounds(
+    center,
+    sizeMeters + TILE_BUILDING_BUFFER_METERS * 2,
+  );
+  const buildings = features
+    .filter((feature) => feature.kind === "building")
+    .map((feature) => ({ feature, center: featureCenter(feature) }))
+    .filter((item): item is { feature: NormalizedFeature; center: MapPoint } =>
+      Boolean(item.center && boundsContain(tileBounds, item.center)),
+    )
+    .sort((a, b) => a.feature.sourceId.localeCompare(b.feature.sourceId));
+  const existingById = new Map(
+    existing.map((value) => [value.sourceId, value]),
+  );
+  const pending = buildings
+    .filter((item) => !existingById.has(item.feature.sourceId))
+    .slice(0, MAX_TILE_BUILDINGS);
+  const sourceUrl = config.USGS_NAIP_BASE_URL.replace(/\/exportImage\/?$/, "");
+  const analyzedAt = new Date().toISOString();
+
+  if (!pending.length)
+    return {
+      center,
+      sizeMeters,
+      analyzedAt,
+      imagery: {
+        provider: "usgs-naip",
+        attribution: ATTRIBUTION,
+        license: LICENSE,
+        sourceUrl,
+      },
+      customizations: [],
+      analyzedBuildings: 0,
+      skippedBuildings: buildings.length,
+      failedSourceIds: [],
+    };
+
+  const image = await fetchAerialImage(imageryBounds, TILE_IMAGE_SIZE, config);
+  const customizations: BuildingCustomization[] = [];
+  const failedSourceIds: string[] = [];
+  const acceptedLandscaping: LandscapingFeature[] = [];
+  for (const { feature } of pending) {
+    try {
+      const requestedBounds = bufferedBounds(
+        exteriorRing(feature),
+        TILE_BUILDING_BUFFER_METERS,
+      );
+      const crop = await cropAerialImage(image, imageryBounds, requestedBounds);
+      const proposal = await analyzeAerialImage(
+        crop.bytes,
+        crop.bounds,
+        feature,
+        features,
+        undefined,
+        TILE_BUILDING_BUFFER_METERS,
+        sourceUrl,
+      );
+      const landscaping = proposal.proposedCustomization.landscaping.filter(
+        (item) => {
+          const duplicate = acceptedLandscaping.some(
+            (other) =>
+              other.kind === item.kind &&
+              distanceMeters(other.point, item.point) <
+                Math.max(
+                  1,
+                  Math.min(other.crownRadius, item.crownRadius) * 0.6,
+                ),
+          );
+          if (!duplicate) acceptedLandscaping.push(item);
+          return !duplicate;
+        },
+      );
+      customizations.push({
+        ...proposal.proposedCustomization,
+        landscaping,
+      });
+    } catch {
+      failedSourceIds.push(feature.sourceId);
+    }
+  }
+  return {
+    center,
+    sizeMeters,
+    analyzedAt,
+    imagery: {
+      provider: "usgs-naip",
+      attribution: ATTRIBUTION,
+      license: LICENSE,
+      sourceUrl,
+    },
+    customizations,
+    analyzedBuildings: customizations.length,
+    skippedBuildings: buildings.length - pending.length,
+    failedSourceIds,
+  };
 }

@@ -136,6 +136,23 @@ export type BuildingEnhancementProposal = z.infer<
   typeof BuildingEnhancementProposalSchema
 >;
 
+export const SceneEnhancementTileSchema = z.object({
+  center: MapPointSchema,
+  sizeMeters: z.number().min(100).max(400),
+  analyzedAt: z.iso.datetime(),
+  imagery: z.object({
+    provider: z.literal("usgs-naip"),
+    attribution: z.string().min(1),
+    license: z.string().min(1),
+    sourceUrl: z.url(),
+  }),
+  customizations: z.array(BuildingCustomizationSchema).max(60),
+  analyzedBuildings: z.number().int().nonnegative(),
+  skippedBuildings: z.number().int().nonnegative(),
+  failedSourceIds: z.array(z.string().min(1).max(200)).max(60),
+});
+export type SceneEnhancementTile = z.infer<typeof SceneEnhancementTileSchema>;
+
 /** Stable across ring order, starting vertex, winding, and world origin changes. */
 export function footprintSignature(geometry: {
   type: string;

@@ -933,6 +933,14 @@ button:disabled {
   background: #eff4e9;
   font-weight: 750;
 }
+.drive-help button.active {
+  color: #102c20;
+  background: #8ee6b4;
+  box-shadow: inset 0 0 0 1px rgba(17, 92, 55, 0.42);
+}
+.drive-help .drive-enhancement-error {
+  color: #ffb7a7;
+}
 .drive-help button.race-start {
   color: #111;
   background: linear-gradient(135deg, #fff 0 48%, #1d2225 48% 52%, #fff 52%);

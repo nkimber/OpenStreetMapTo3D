@@ -10,6 +10,8 @@ import {
   WorldOverrideSchema,
   BuildingCustomizationSchema,
   BuildingEnhancementProposalSchema,
+  MapPointSchema,
+  SceneEnhancementTileSchema,
   footprintSignature,
   validateBuildingOpenings,
 } from "@osm3d/contracts";
@@ -20,7 +22,10 @@ import type { DatabasePool } from "./database.js";
 import { createImportJob, executeImportJob, getImportJob } from "./imports.js";
 import { geocode } from "./providers.js";
 import { saveCustomization } from "./customizations.js";
-import { createBuildingEnhancement } from "./aerial.js";
+import {
+  createBuildingEnhancement,
+  createSceneEnhancementTile,
+} from "./aerial.js";
 import {
   createWorld,
   getSnapshotPreview,
@@ -246,6 +251,57 @@ export async function buildApp({
       );
     } catch (reason) {
       request.log.warn({ err: reason }, "Building enhancement failed");
+      return reply.code(502).send({
+        error: {
+          code: "AERIAL_ANALYSIS_FAILED",
+          message:
+            reason instanceof Error
+              ? reason.message
+              : "Aerial imagery analysis failed.",
+        },
+      });
+    }
+  });
+
+  app.post("/api/worlds/:id/scene-enhancement", async (request, reply) => {
+    const { id } = UuidParamSchema.parse(request.params);
+    const body = z
+      .object({
+        center: MapPointSchema,
+        sizeMeters: z.number().min(100).max(400).default(200),
+      })
+      .parse(request.body);
+    const definition = await getWorldDefinition(pool, id);
+    if (!definition)
+      return reply.code(404).send({
+        error: { code: "WORLD_NOT_FOUND", message: "World not found." },
+      });
+    const [longitude, latitude] = body.center;
+    const bounds = definition.world.bounds;
+    if (
+      longitude < bounds.west ||
+      longitude > bounds.east ||
+      latitude < bounds.south ||
+      latitude > bounds.north
+    )
+      return reply.code(400).send({
+        error: {
+          code: "OUTSIDE_WORLD",
+          message: "The enhancement tile center must be inside the world.",
+        },
+      });
+    try {
+      return SceneEnhancementTileSchema.parse(
+        await createSceneEnhancementTile(
+          body.center,
+          body.sizeMeters,
+          definition.features,
+          definition.buildingCustomizations ?? [],
+          config,
+        ),
+      );
+    } catch (reason) {
+      request.log.warn({ err: reason }, "Scene enhancement failed");
       return reply.code(502).send({
         error: {
           code: "AERIAL_ANALYSIS_FAILED",

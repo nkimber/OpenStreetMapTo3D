@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BuildingCustomizationSchema,
+  SceneEnhancementTileSchema,
   footprintSignature,
   openingWidth,
   validateBuildingOpenings,
@@ -118,5 +119,24 @@ describe("reusable building customizations", () => {
     });
     expect(enhanced.landscaping[0]?.kind).toBe("tree");
     expect(enhanced.appearance.roofOrientation).toBe("across");
+  });
+  it("validates a bounded driving-scene enhancement result", () => {
+    expect(
+      SceneEnhancementTileSchema.safeParse({
+        center: [-84.2, 34.05],
+        sizeMeters: 200,
+        analyzedAt: "2026-09-25T12:00:00.000Z",
+        imagery: {
+          provider: "usgs-naip",
+          attribution: "USGS",
+          license: "Public domain",
+          sourceUrl: "https://example.test/ImageServer",
+        },
+        customizations: [draft()],
+        analyzedBuildings: 1,
+        skippedBuildings: 0,
+        failedSourceIds: [],
+      }).success,
+    ).toBe(true);
   });
 });
