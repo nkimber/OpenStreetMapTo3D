@@ -67,6 +67,7 @@ export function BuildingEditor({
             openings: [],
             appearance: {},
             boundaries: [],
+            landscaping: [],
           }),
   );
   const [tool, setTool] = useState<Tool>("select");

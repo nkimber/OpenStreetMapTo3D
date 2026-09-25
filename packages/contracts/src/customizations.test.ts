@@ -90,4 +90,33 @@ describe("reusable building customizations", () => {
     value.openings[1]!.sill = 3;
     expect(validateBuildingOpenings(geometry, value)).toBeUndefined();
   });
+  it("accepts aerial evidence and landscaping while preserving safe defaults", () => {
+    const value = draft();
+    expect(value.landscaping).toEqual([]);
+    const enhanced = BuildingCustomizationSchema.parse({
+      ...value,
+      appearance: { roof: "gabled", roofOrientation: "across" },
+      landscaping: [
+        {
+          id: "tree-1",
+          kind: "tree",
+          point: [-74.9999, 40.0001],
+          crownRadius: 2.4,
+          height: 7,
+          confidence: 0.78,
+        },
+      ],
+      enhancement: {
+        provider: "usgs-naip",
+        analyzedAt: "2026-09-24T12:00:00.000Z",
+        bufferMeters: 30,
+        sourceUrl: "https://imagery.nationalmap.gov/",
+        attribution: "USGS The National Map — NAIP imagery",
+        license: "Public domain",
+        roofConfidence: 0.72,
+      },
+    });
+    expect(enhanced.landscaping[0]?.kind).toBe("tree");
+    expect(enhanced.appearance.roofOrientation).toBe("across");
+  });
 });

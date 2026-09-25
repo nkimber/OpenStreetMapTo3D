@@ -14,6 +14,7 @@ import { api } from "../api.js";
 import { DriveMiniMap } from "./DriveMiniMap.js";
 import { Garage } from "./Garage.js";
 import { BuildingEditor } from "./BuildingEditor.js";
+import { BuildingEnhancementPanel } from "./BuildingEnhancementPanel.js";
 import {
   savedVehicleChoice,
   vehicleStorageKey,
@@ -220,6 +221,14 @@ export function WorldWorkspace({
       setRaceSetupOpen(false);
     }
   }, [mode]);
+
+  useEffect(() => {
+    engineRef.current?.setSelectedBuilding(
+      mode === "drive" && selected?.kind === "building"
+        ? selected.sourceId
+        : undefined,
+    );
+  }, [mode, selected, engineReady]);
 
   useEffect(() => {
     engineRef.current?.setRoadSignsEnabled(roadSignsEnabled);
@@ -638,7 +647,8 @@ export function WorldWorkspace({
           <section className="drive-help glass-panel">
             <strong>Drive</strong>
             <span>
-              WASD / arrows · Space handbrake · R safe reset · Shift+R spawn
+              WASD / arrows · Space handbrake · R safe reset · Click a building
+              to enhance
             </span>
             <div className="drive-actions">
               <button
@@ -694,6 +704,19 @@ export function WorldWorkspace({
             </details>
             {raceError && <p className="race-error">{raceError}</p>}
           </section>
+          {engineReady &&
+            engineRef.current &&
+            selected?.kind === "building" &&
+            !stats.race &&
+            !raceSetupOpen && (
+              <BuildingEnhancementPanel
+                definition={definition}
+                feature={selected}
+                engine={engineRef.current}
+                onDefinitionChange={onDefinitionChange}
+                onClose={() => setSelection({})}
+              />
+            )}
           {raceSetupOpen && !stats.race && (
             <section className="race-setup glass-panel" aria-label="Race setup">
               <header>

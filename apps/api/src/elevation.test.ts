@@ -21,6 +21,7 @@ const config: AppConfig = {
   NOMINATIM_BASE_URL: "https://nominatim.openstreetmap.org",
   OVERPASS_BASE_URL: "https://overpass-api.de/api/interpreter",
   USGS_ELEVATION_BASE_URL: "https://example.test/getSamples",
+  USGS_NAIP_BASE_URL: "https://example.test/exportImage",
   ELEVATION_SAMPLE_SPACING_METERS: 100,
   ELEVATION_MAX_GRID_DIMENSION: 17,
   ELEVATION_SAMPLE_BATCH_SIZE: 25,

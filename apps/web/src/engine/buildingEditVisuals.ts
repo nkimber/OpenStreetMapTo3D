@@ -14,6 +14,8 @@ export function customizedPlan(
   if (!value) return building;
   const tags = { ...building.appearanceTags };
   if (value.appearance.roof) tags["roof:shape"] = value.appearance.roof;
+  if (value.appearance.roofOrientation)
+    tags["roof:orientation"] = value.appearance.roofOrientation;
   if (value.appearance.wallColor)
     tags["building:colour"] = value.appearance.wallColor;
   if (value.appearance.roofColor)
@@ -230,6 +232,46 @@ export function createCustomizationVisual(
         boundaryIndex: index,
       }),
     );
+  });
+  (value.landscaping ?? []).forEach((item) => {
+    const point = toLocal(item.point, definition);
+    const ground = routeHeight(point, plan);
+    if (item.kind === "tree") {
+      const trunkHeight = Math.max(1.2, item.height * 0.42);
+      const trunk = addMesh(
+        new THREE.CylinderGeometry(
+          Math.max(0.1, item.crownRadius * 0.12),
+          Math.max(0.14, item.crownRadius * 0.17),
+          trunkHeight,
+          8,
+        ),
+        0x6f5136,
+      );
+      trunk.position.set(point.x, ground + trunkHeight / 2, point.z);
+      trunk.castShadow = true;
+      const crown = addMesh(
+        new THREE.IcosahedronGeometry(item.crownRadius, 1),
+        0x3f743c,
+      );
+      crown.scale.y = Math.max(
+        0.65,
+        (item.height - trunkHeight) / (item.crownRadius * 2),
+      );
+      crown.position.set(
+        point.x,
+        ground + trunkHeight + (item.height - trunkHeight) / 2,
+        point.z,
+      );
+      crown.castShadow = true;
+    } else {
+      const bush = addMesh(
+        new THREE.IcosahedronGeometry(item.crownRadius, 1),
+        0x568349,
+      );
+      bush.scale.y = Math.max(0.45, item.height / (item.crownRadius * 2));
+      bush.position.set(point.x, ground + item.height / 2, point.z);
+      bush.castShadow = true;
+    }
   });
   return group;
 }

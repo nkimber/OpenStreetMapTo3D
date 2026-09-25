@@ -17,6 +17,7 @@ x-app-environment: &app-environment
   NOMINATIM_BASE_URL: ${NOMINATIM_BASE_URL:-https://nominatim.openstreetmap.org}
   OVERPASS_BASE_URL: ${OVERPASS_BASE_URL:-https://overpass-api.de/api/interpreter}
   USGS_ELEVATION_BASE_URL: ${USGS_ELEVATION_BASE_URL:-https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples}
+  USGS_NAIP_BASE_URL: ${USGS_NAIP_BASE_URL:-https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage}
   MAX_IMPORT_AREA_SQUARE_KM: "4"
   MAX_IMPORT_RESPONSE_BYTES: "25000000"
   LOG_LEVEL: info

@@ -55,6 +55,10 @@ intentionally want to remove local projects and cached source data.
   and draggable fences, gates and garden boundaries. Saved customizations follow
   the same OSM building across worlds and imports. See the
   [building editor guide](documents/building-customizations.md).
+- Drive-mode building selection with a review-before-save aerial enhancement
+  proof of concept. Public-domain USGS NAIP crops can propose roof form and
+  colour, a driveway, trees and bushes within a 30 m context area. See the
+  [aerial enhancement guide](documents/aerial-building-enhancement.md).
 - Undo/redo and affected-chunk-only rebuilds in the live editor
 - Build hash, worker timing, frame, triangle, recovery, and diagnostic telemetry
 - Saved/recent worlds with visible OpenStreetMap and elevation attribution
@@ -91,3 +95,6 @@ Application source code is licensed under the MIT License. OpenStreetMap data
 is provided under the Open Data Commons Open Database License (ODbL) and must
 be attributed to OpenStreetMap contributors. The initial USGS 3DEP elevation
 source is public domain and is attributed separately in generated worlds.
+USGS NAIP aerial imagery used by the optional building-enhancement action is
+also public domain; its source and analysis metadata are stored with the saved
+customization.

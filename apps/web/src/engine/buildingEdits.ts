@@ -47,6 +47,7 @@ export function emptyCustomization(
     openings: [],
     appearance: {},
     boundaries: [],
+    landscaping: [],
   };
 }
 export function hasCustomization(
@@ -56,6 +57,8 @@ export function hasCustomization(
     value &&
     (value.openings.length ||
       value.boundaries.length ||
+      value.landscaping?.length ||
+      value.enhancement ||
       Object.keys(value.appearance).length),
   );
 }

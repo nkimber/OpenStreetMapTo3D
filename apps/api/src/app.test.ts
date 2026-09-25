@@ -15,6 +15,7 @@ const config: AppConfig = {
   OVERPASS_BASE_URL: "https://overpass-api.de/api/interpreter",
   USGS_ELEVATION_BASE_URL:
     "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples",
+  USGS_NAIP_BASE_URL: "https://example.test/exportImage",
   ELEVATION_SAMPLE_SPACING_METERS: 10,
   ELEVATION_MAX_GRID_DIMENSION: 129,
   ELEVATION_SAMPLE_BATCH_SIZE: 900,

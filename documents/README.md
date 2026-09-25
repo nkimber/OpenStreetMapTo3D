@@ -32,6 +32,9 @@ MVP from later roadmap items.
   rules, presentation and results.
 - [Building editor](building-customizations.md) covers door and garage placement,
   driveways, boundaries, appearance controls and shared building persistence.
+- [Aerial building enhancement](aerial-building-enhancement.md) describes the
+  Drive-mode selection and review workflow, NAIP analysis, persistence and POC
+  limitations.
 - [Technical architecture](technical-architecture.md) describes containers,
   runtime boundaries, packages, and system-level invariants.
 - [OpenStreetMap data pipeline](openstreetmap-data-pipeline.md) covers

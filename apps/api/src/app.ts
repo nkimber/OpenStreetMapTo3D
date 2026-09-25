@@ -9,6 +9,7 @@ import {
   WorldCreateRequestSchema,
   WorldOverrideSchema,
   BuildingCustomizationSchema,
+  BuildingEnhancementProposalSchema,
   footprintSignature,
   validateBuildingOpenings,
 } from "@osm3d/contracts";
@@ -19,6 +20,7 @@ import type { DatabasePool } from "./database.js";
 import { createImportJob, executeImportJob, getImportJob } from "./imports.js";
 import { geocode } from "./providers.js";
 import { saveCustomization } from "./customizations.js";
+import { createBuildingEnhancement } from "./aerial.js";
 import {
   createWorld,
   getSnapshotPreview,
@@ -208,6 +210,52 @@ export async function buildApp({
         error: { code: "WORLD_NOT_FOUND", message: "World not found." },
       });
     return { overrides: await replaceOverrides(pool, id, body.overrides) };
+  });
+
+  app.post("/api/worlds/:id/building-enhancement", async (request, reply) => {
+    const { id } = UuidParamSchema.parse(request.params);
+    const body = z
+      .object({
+        sourceId: z.string().min(1).max(200),
+        bufferMeters: z.number().min(10).max(60).default(30),
+      })
+      .parse(request.body);
+    const definition = await getWorldDefinition(pool, id);
+    const feature = definition?.features.find(
+      (item) => item.kind === "building" && item.sourceId === body.sourceId,
+    );
+    if (!definition || !feature)
+      return reply.code(404).send({
+        error: {
+          code: "BUILDING_NOT_FOUND",
+          message: "Building not found in this world.",
+        },
+      });
+    const existing = definition.buildingCustomizations?.find(
+      (item) => item.sourceId === body.sourceId,
+    );
+    try {
+      return BuildingEnhancementProposalSchema.parse(
+        await createBuildingEnhancement(
+          feature,
+          definition.features,
+          existing,
+          body.bufferMeters,
+          config,
+        ),
+      );
+    } catch (reason) {
+      request.log.warn({ err: reason }, "Building enhancement failed");
+      return reply.code(502).send({
+        error: {
+          code: "AERIAL_ANALYSIS_FAILED",
+          message:
+            reason instanceof Error
+              ? reason.message
+              : "Aerial imagery analysis failed.",
+        },
+      });
+    }
   });
 
   app.put("/api/worlds/:id/building-customization", async (request, reply) => {

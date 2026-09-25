@@ -23,6 +23,7 @@ export async function loadCustomizations(
       openings: [],
       appearance: {},
       boundaries: [],
+      landscaping: [],
     }),
     revision: row.revision,
   }));

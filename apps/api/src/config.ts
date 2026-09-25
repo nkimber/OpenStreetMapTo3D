@@ -18,6 +18,11 @@ const ConfigSchema = z.object({
     .default(
       "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/getSamples",
     ),
+  USGS_NAIP_BASE_URL: z
+    .url()
+    .default(
+      "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage",
+    ),
   ELEVATION_SAMPLE_SPACING_METERS: z.coerce
     .number()
     .min(4)

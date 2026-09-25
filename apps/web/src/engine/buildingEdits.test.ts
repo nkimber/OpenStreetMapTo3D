@@ -105,6 +105,7 @@ describe("building editing geometry", () => {
         openings: [openingWithPath],
         appearance: {},
         boundaries: [],
+        landscaping: [],
       },
       definition,
       plan,
@@ -281,6 +282,7 @@ describe("building editing geometry", () => {
       ],
       appearance: {},
       boundaries: [],
+      landscaping: [],
     };
     const visuals = createCustomizationVisual(
       plan.buildings[0]!,

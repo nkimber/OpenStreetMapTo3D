@@ -17,6 +17,31 @@ export const OpeningSchema = z.object({
   path: z.array(MapPointSchema).max(100).default([]),
 });
 export type BuildingOpening = z.infer<typeof OpeningSchema>;
+export const LandscapingFeatureSchema = z.object({
+  id: z.string().min(1).max(80),
+  kind: z.enum(["tree", "bush"]),
+  point: MapPointSchema,
+  crownRadius: z.number().min(0.4).max(15),
+  height: z.number().min(0.4).max(30),
+  confidence: z.number().min(0).max(1),
+});
+export type LandscapingFeature = z.infer<typeof LandscapingFeatureSchema>;
+
+export const BuildingEnhancementEvidenceSchema = z.object({
+  provider: z.literal("usgs-naip"),
+  analyzedAt: z.iso.datetime(),
+  bufferMeters: z.number().min(10).max(60),
+  sourceUrl: z.url(),
+  attribution: z.string().min(1),
+  license: z.string().min(1),
+  roofConfidence: z.number().min(0).max(1),
+  drivewayConfidence: z.number().min(0).max(1).optional(),
+  vegetationConfidence: z.number().min(0).max(1).optional(),
+});
+export type BuildingEnhancementEvidence = z.infer<
+  typeof BuildingEnhancementEvidenceSchema
+>;
+
 export const BuildingCustomizationSchema = z
   .object({
     sourceId: z.string().min(1).max(200),
@@ -26,6 +51,7 @@ export const BuildingCustomizationSchema = z
     appearance: z
       .object({
         roof: z.enum(["gabled", "hipped", "flat"]).optional(),
+        roofOrientation: z.enum(["along", "across"]).optional(),
         wallColor: z
           .string()
           .regex(/^#[0-9a-f]{6}$/i)
@@ -47,23 +73,68 @@ export const BuildingCustomizationSchema = z
       )
       .max(100)
       .default([]),
+    landscaping: z.array(LandscapingFeatureSchema).max(40).default([]),
+    enhancement: BuildingEnhancementEvidenceSchema.optional(),
   })
   .superRefine((value, context) => {
     if (
       !value.footprint &&
       (value.openings.length ||
         value.boundaries.length ||
+        value.landscaping.length ||
+        value.enhancement ||
         Object.keys(value.appearance).length)
     )
       context.addIssue({
         code: "custom",
         message: "Only a reset can have an empty footprint.",
       });
-    const ids = [...value.openings, ...value.boundaries].map((item) => item.id);
+    const ids = [
+      ...value.openings,
+      ...value.boundaries,
+      ...value.landscaping,
+    ].map((item) => item.id);
     if (new Set(ids).size !== ids.length)
       context.addIssue({ code: "custom", message: "Item IDs must be unique." });
   });
 export type BuildingCustomization = z.infer<typeof BuildingCustomizationSchema>;
+
+export const BuildingEnhancementProposalSchema = z.object({
+  sourceId: z.string().min(1).max(200),
+  bufferMeters: z.number().min(10).max(60),
+  imagery: z.object({
+    previewDataUrl: z.string().startsWith("data:image/"),
+    analyzedAt: z.iso.datetime(),
+    provider: z.literal("usgs-naip"),
+    attribution: z.string().min(1),
+    license: z.string().min(1),
+    sourceUrl: z.url(),
+  }),
+  observations: z.object({
+    roof: z.object({
+      shape: z.enum(["gabled", "hipped", "flat"]),
+      orientation: z.enum(["along", "across"]),
+      color: z.string().regex(/^#[0-9a-f]{6}$/i),
+      confidence: z.number().min(0).max(1),
+    }),
+    driveway: z
+      .object({
+        detected: z.boolean(),
+        confidence: z.number().min(0).max(1),
+      })
+      .optional(),
+    landscaping: z.object({
+      trees: z.number().int().nonnegative(),
+      bushes: z.number().int().nonnegative(),
+      confidence: z.number().min(0).max(1),
+    }),
+  }),
+  proposedCustomization: BuildingCustomizationSchema,
+  warnings: z.array(z.string()).max(20),
+});
+export type BuildingEnhancementProposal = z.infer<
+  typeof BuildingEnhancementProposalSchema
+>;
 
 /** Stable across ring order, starting vertex, winding, and world origin changes. */
 export function footprintSignature(geometry: {

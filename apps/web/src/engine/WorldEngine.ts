@@ -470,6 +470,7 @@ export class WorldEngine {
   private editPointerHandler: ((event: EditPointer) => void) | undefined;
   private draggingEdit: EditPointer | undefined;
   private highlightCustomizations = false;
+  private selectedBuildingId: string | undefined;
   private readonly customizationBodies = new Map<string, RAPIER.RigidBody>();
   private legacyGroundBody: RAPIER.RigidBody | undefined;
   private readonly chassis: RAPIER.RigidBody;
@@ -680,6 +681,17 @@ export class WorldEngine {
     this.highlightCustomizations = highlight;
     this.refreshBuildingVisuals(all ? undefined : changed);
     this.syncCustomizationPhysics(all ? undefined : changed);
+  }
+
+  setSelectedBuilding(sourceId?: string): void {
+    if (sourceId === this.selectedBuildingId) return;
+    const changed = new Set(
+      [this.selectedBuildingId, sourceId].filter((value): value is string =>
+        Boolean(value),
+      ),
+    );
+    this.selectedBuildingId = sourceId;
+    this.refreshBuildingVisuals(changed);
   }
 
   focusBuilding(sourceId: string): void {
@@ -1359,6 +1371,15 @@ export class WorldEngine {
       const box = new THREE.BoxHelper(house, custom ? 0x4ce0a1 : 0xffab40);
       group.add(box);
     }
+    if (this.selectedBuildingId === building.sourceId) {
+      const selected = new THREE.BoxHelper(house, 0xffc247);
+      selected.name = "Selected building outline";
+      selected.material.depthTest = false;
+      selected.material.transparent = true;
+      selected.material.opacity = 0.95;
+      selected.renderOrder = 20;
+      group.add(selected);
+    }
     return group;
   }
 
@@ -1704,7 +1725,8 @@ export class WorldEngine {
       }
       return;
     }
-    if (this.mode !== "inspect") return;
+    if (this.mode !== "inspect" && this.mode !== "drive") return;
+    if (this.mode === "drive" && (this.race || this.raceSetupOpen)) return;
     const bounds = this.renderer.domElement.getBoundingClientRect();
     this.pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
     this.pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
@@ -1718,6 +1740,10 @@ export class WorldEngine {
       typeof match?.userData.sourceId === "string"
         ? match.userData.sourceId
         : undefined;
+    if (this.mode === "drive" && match?.userData.featureKind !== "building") {
+      this.callbacks.onSelect({});
+      return;
+    }
     if (!sourceId) {
       this.callbacks.onSelect({});
       return;

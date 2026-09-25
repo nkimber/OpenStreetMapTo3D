@@ -115,6 +115,19 @@ Implementation must follow the current policies for:
 - Any future tile, elevation, or imagery provider
 - [USGS 3D Elevation Program](https://www.usgs.gov/3d-elevation-program)
 
+## Aerial imagery
+
+The building-enhancement proof of concept uses a server-configured USGS NAIP
+ImageServer endpoint. NAIP imagery is public domain, but each saved proposal
+still records its provider, source URL, license statement, analysis time and
+confidence. Requests are limited to one 512 × 512 image around a selected
+building, a 10–60 m buffer, a 20 second timeout and an 8 MB response.
+
+Coverage is currently United States-only. The application must fail closed
+outside coverage and must not substitute commercial basemap tiles. A future
+imagery provider requires a documented derivative-work right, attribution
+terms, request policy and retention policy before being enabled.
+
 Provider policies may change. Configuration and adapters must let deployments
 switch services without rebuilding the user workflow.
 
