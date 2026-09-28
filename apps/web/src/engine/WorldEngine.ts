@@ -88,6 +88,8 @@ import {
 
 const FIXED_STEP = 1 / 60;
 const RACE_COUNTDOWN_SECONDS = 3.3;
+const RACE_MISSILE_COOLDOWN_SECONDS = 1;
+const RACE_MISSILE_SPEED = 95;
 
 export type RacePhase = "countdown" | "racing" | "finished";
 export type RaceDifficulty = "casual" | "competitive" | "expert";
@@ -240,6 +242,8 @@ interface RaceVehicle {
   stuckSeconds: number;
   powerMultiplier: number;
   checkpointTimes: number[];
+  /** Set while a missile hit has the rival spinning or airborne. */
+  hit?: { kind: "spin" | "flip"; elapsed: number; settled: number };
   finishTime?: number;
 }
 
@@ -2201,7 +2205,9 @@ export class WorldEngine {
   }
 
   private wantsToFire(): boolean {
-    if (this.garageOpen || this.flightForm !== "flying") return false;
+    const racing = this.flightForm === "car" && this.race?.phase === "racing";
+    if (this.garageOpen || (this.flightForm !== "flying" && !racing))
+      return false;
     if (this.keys.has("KeyF")) return true;
     if (!this.inputPreferences.gamepadEnabled) return false;
     const gamepad = [...(navigator.getGamepads?.() ?? [])].find(
@@ -2230,10 +2236,23 @@ export class WorldEngine {
   private stepRockets(dt: number): void {
     this.rocketCooldown = Math.max(0, this.rocketCooldown - dt);
     if (this.rocketCooldown === 0 && this.wantsToFire()) {
-      this.fireRocket();
-      this.rocketCooldown = ROCKET_COOLDOWN_SECONDS;
+      if (this.flightForm === "car") {
+        this.fireRaceMissile();
+        this.rocketCooldown = RACE_MISSILE_COOLDOWN_SECONDS;
+      } else {
+        this.fireRocket();
+        this.rocketCooldown = ROCKET_COOLDOWN_SECONDS;
+      }
     }
     for (const rocket of [...this.combat.rockets]) {
+      if (rocket.homing) {
+        const rival = this.steerMissile(rocket, dt);
+        if (rival) {
+          this.combat.removeRocket(rocket);
+          this.missileHitRival(rival, rocket.position);
+          continue;
+        }
+      }
       const step = rocket.velocity.clone().multiplyScalar(dt);
       const length = step.length();
       const direction = step.clone().divideScalar(length || 1);
@@ -2265,6 +2284,13 @@ export class WorldEngine {
 
   private rocketImpact(point: THREE.Vector3, collider: RAPIER.Collider): void {
     const body = collider.parent();
+    const rival = this.race?.rivals.find(
+      (candidate) => candidate.chassis.handle === body?.handle,
+    );
+    if (rival) {
+      this.missileHitRival(rival, point);
+      return;
+    }
     let sourceId = body ? this.buildingBodies.get(body.handle) : undefined;
     if (!sourceId && body)
       for (const [id, candidate] of this.customizationBodies)
@@ -2310,6 +2336,130 @@ export class WorldEngine {
     if (this.selectedBuildingId === sourceId) {
       this.selectedBuildingId = undefined;
       this.callbacks.onSelect({});
+    }
+  }
+
+  private fireRaceMissile(): void {
+    const rotation = this.chassis.rotation();
+    const quaternion = new THREE.Quaternion(
+      rotation.x,
+      rotation.y,
+      rotation.z,
+      rotation.w,
+    );
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion);
+    const position = this.chassis.translation();
+    const origin = new THREE.Vector3(position.x, position.y, position.z)
+      .add(new THREE.Vector3(0, 0.45, 0).applyQuaternion(quaternion))
+      .addScaledVector(forward, 2.6);
+    const { x, y, z } = this.chassis.linvel();
+    this.combat.launch(
+      origin,
+      forward
+        .clone()
+        .multiplyScalar(RACE_MISSILE_SPEED)
+        .add(new THREE.Vector3(x, y, z)),
+      true,
+    );
+  }
+
+  /**
+   * Turns a race missile toward the nearest rival inside a forward cone.
+   * Returns that rival when the missile is close enough to detonate.
+   */
+  private steerMissile(
+    rocket: { position: THREE.Vector3; velocity: THREE.Vector3 },
+    dt: number,
+  ): RaceVehicle | undefined {
+    const speed = rocket.velocity.length();
+    const heading = rocket.velocity.clone().divideScalar(speed || 1);
+    let best:
+      | { rival: RaceVehicle; offset: THREE.Vector3; distance: number }
+      | undefined;
+    for (const rival of this.race?.rivals ?? []) {
+      if (rival.hit) continue;
+      const p = rival.chassis.translation();
+      const offset = new THREE.Vector3(p.x, p.y + 0.2, p.z).sub(
+        rocket.position,
+      );
+      const distance = offset.length();
+      if (distance < 2.3) return rival;
+      if (distance > 160 || offset.dot(heading) < distance * Math.cos(0.5))
+        continue;
+      if (!best || distance < best.distance) best = { rival, offset, distance };
+    }
+    if (best) {
+      const turn = Math.min(1, 2.6 * dt);
+      heading.lerp(best.offset.normalize(), turn).normalize();
+      rocket.velocity.copy(heading.multiplyScalar(speed));
+    }
+    return undefined;
+  }
+
+  /** Knocks a rival into a spin-out or an airborne flip. */
+  private missileHitRival(rival: RaceVehicle, point: THREE.Vector3): void {
+    this.combat.explode(point, 1.3, point.distanceTo(this.camera.position));
+    if (rival.hit || !this.race) return;
+    const kind = Math.random() < 0.5 ? "spin" : "flip";
+    rival.hit = { kind, elapsed: 0, settled: 0 };
+    const rotation = rival.chassis.rotation();
+    const quaternion = new THREE.Quaternion(
+      rotation.x,
+      rotation.y,
+      rotation.z,
+      rotation.w,
+    );
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion);
+    const velocity = rival.chassis.linvel();
+    const side = Math.random() < 0.5 ? -1 : 1;
+    if (kind === "spin") {
+      rival.chassis.setLinvel(
+        { x: velocity.x * 0.6, y: velocity.y + 2.5, z: velocity.z * 0.6 },
+        true,
+      );
+      rival.chassis.setAngvel({ x: 0, y: side * 8, z: 0 }, true);
+    } else {
+      const roll = forward.multiplyScalar(side * (6 + Math.random() * 3));
+      rival.chassis.setLinvel(
+        { x: velocity.x * 0.7, y: 10 + Math.random() * 3, z: velocity.z * 0.7 },
+        true,
+      );
+      rival.chassis.setAngvel({ x: roll.x, y: side * 1.5, z: roll.z }, true);
+    }
+    this.race.notice = {
+      text: `Direct hit! ${rival.name} ${kind === "spin" ? "spins out" : "flips"}`,
+      expiresAt: this.race.elapsedSeconds + 2,
+    };
+  }
+
+  /** Waits for a hit rival to come to rest, righting it if it landed badly. */
+  private settleHitRival(
+    race: RaceSession,
+    rival: RaceVehicle,
+    dt: number,
+  ): void {
+    const hit = rival.hit!;
+    hit.elapsed += dt;
+    const linear = rival.chassis.linvel();
+    const angular = rival.chassis.angvel();
+    const still =
+      Math.hypot(linear.x, linear.y, linear.z) < 1.5 &&
+      Math.hypot(angular.x, angular.y, angular.z) < 0.8;
+    hit.settled = still ? hit.settled + dt : 0;
+    if ((hit.elapsed > 1 && hit.settled > 0.5) || hit.elapsed > 6) {
+      const rotation = rival.chassis.rotation();
+      const upright =
+        1 - 2 * (rotation.x * rotation.x + rotation.z * rotation.z);
+      if (upright < 0.6 || hit.elapsed > 6) {
+        rival.progress = nearestRaceProgress(
+          race.course,
+          rival.chassis.translation(),
+          rival.progress,
+        );
+        this.recoverRival(race, rival);
+      }
+      rival.stuckSeconds = 0;
+      delete rival.hit;
     }
   }
 
@@ -2477,8 +2627,14 @@ export class WorldEngine {
     );
     if (this.race) {
       for (const rival of this.race.rivals) {
-        const target =
-          this.race.phase === "racing"
+        const target = rival.hit
+          ? {
+              throttle: 0,
+              brake: 0.25,
+              steering: 0,
+              handbrake: rival.hit.kind === "spin",
+            }
+          : this.race.phase === "racing"
             ? this.raceAiInput(this.race, rival)
             : { throttle: 0, brake: 1, steering: 0, handbrake: true };
         rival.input =
@@ -2846,6 +3002,10 @@ export class WorldEngine {
       }
 
       for (const rival of race.rivals) {
+        if (rival.hit) {
+          this.settleHitRival(race, rival, FIXED_STEP);
+          continue;
+        }
         const rivalSpeed =
           Math.abs(rival.controller.currentVehicleSpeed()) * 3.6;
         const rotation = rival.chassis.rotation();

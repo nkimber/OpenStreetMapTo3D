@@ -14,6 +14,8 @@ export interface Rocket {
   velocity: THREE.Vector3;
   age: number;
   puffTimer: number;
+  /** Race missiles steer gently toward a rival ahead. */
+  homing?: boolean;
 }
 
 interface Puff {
@@ -159,7 +161,11 @@ export class CombatEffects {
     return this.shakeAmount;
   }
 
-  launch(origin: THREE.Vector3, velocity: THREE.Vector3): Rocket {
+  launch(
+    origin: THREE.Vector3,
+    velocity: THREE.Vector3,
+    homing = false,
+  ): Rocket {
     const mesh = new THREE.Group();
     mesh.add(new THREE.Mesh(this.rocketBody, this.rocketMaterial));
     mesh.add(new THREE.Mesh(this.rocketFlame, this.flameMaterial));
@@ -172,6 +178,7 @@ export class CombatEffects {
       velocity: velocity.clone(),
       age: 0,
       puffTimer: 0,
+      homing,
     };
     this.rockets.push(rocket);
     this.puff(origin, new THREE.Vector3(), 0.3, 1.4, 0.5, 0.6, 0xd9d4cc);
@@ -183,6 +190,7 @@ export class CombatEffects {
     rocket.age += dt;
     rocket.position.copy(to);
     rocket.mesh.position.copy(to);
+    if (rocket.homing) rocket.mesh.lookAt(to.clone().sub(rocket.velocity));
     rocket.puffTimer -= dt;
     if (rocket.puffTimer <= 0) {
       rocket.puffTimer = 0.025;

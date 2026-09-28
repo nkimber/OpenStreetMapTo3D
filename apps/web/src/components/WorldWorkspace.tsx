@@ -856,7 +856,9 @@ export function WorldWorkspace({
             <span>
               {flying
                 ? "F fires rockets · Land, then press T to drive again · R returns the car to the road"
-                : "WASD / arrows · Space handbrake · T transform · R safe reset · Click a building to enhance"}
+                : stats.race
+                  ? "WASD / arrows · Space handbrake · F fires a missile at the car ahead · R safe reset"
+                  : "WASD / arrows · Space handbrake · T transform · R safe reset · Click a building to enhance"}
             </span>
             {Object.keys(enhancementProposals).length > 0 && (
               <small>
