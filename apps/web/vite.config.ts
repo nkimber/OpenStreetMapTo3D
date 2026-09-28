@@ -10,6 +10,8 @@ export default defineConfig({
       "@dimforge/rapier3d-compat",
       "three",
       "three/examples/jsm/controls/OrbitControls.js",
+      "three/examples/jsm/loaders/GLTFLoader.js",
+      "three/examples/jsm/utils/BufferGeometryUtils.js",
       "zod",
     ],
   },

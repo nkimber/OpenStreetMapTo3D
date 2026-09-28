@@ -20,7 +20,13 @@ interface FailedMessage {
   message: string;
 }
 
-type WorkerMessage = WorldBuildProgress | CompleteMessage | FailedMessage;
+interface ReadyMessage {
+  version: 1;
+  type: "ready";
+}
+
+type WorkerMessage =
+  WorldBuildProgress | CompleteMessage | FailedMessage | ReadyMessage;
 
 export interface WorldBuildResult {
   plan: WorldPlan;
@@ -71,6 +77,16 @@ export class WorldBuilderClient {
         "message",
         (event: MessageEvent<WorkerMessage>) => {
           const message = event.data;
+          if (message.type === "ready") {
+            // Send the job only once the worker is listening for it.
+            worker.postMessage({
+              version: 1,
+              jobId,
+              definition,
+              chunkSize: 256,
+            } satisfies WorldBuildRequest);
+            return;
+          }
           if (message.jobId !== jobId) return;
           if (message.type === "progress") {
             onProgress(message);
@@ -95,12 +111,6 @@ export class WorldBuilderClient {
           new Error(event.message || "The world-generation worker failed."),
         );
       });
-      worker.postMessage({
-        version: 1,
-        jobId,
-        definition,
-        chunkSize: 256,
-      } satisfies WorldBuildRequest);
     });
   }
 

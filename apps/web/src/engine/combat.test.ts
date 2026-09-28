@@ -66,7 +66,6 @@ describe("building destruction", () => {
     expect(scene.children.length).toBeGreaterThan(before + 10);
     expect(effects.shake).toBeGreaterThan(0);
     for (let t = 0; t < 12; t += 0.05) effects.update(0.05);
-    // Only the reusable flash light remains once the effects have finished.
     expect(scene.children.length).toBe(before);
     effects.dispose();
   });

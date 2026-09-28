@@ -84,4 +84,9 @@ worker.addEventListener("message", (event: MessageEvent<unknown>) => {
   }
 });
 
+// Announce readiness only after the listener exists. A request posted while a
+// module worker is still loading its imports can otherwise be lost, leaving
+// the build waiting forever.
+worker.postMessage({ version: 1, type: "ready" });
+
 export {};
