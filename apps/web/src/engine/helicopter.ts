@@ -108,6 +108,8 @@ const smooth = (from: number, to: number, t: number) =>
 
 export interface HelicopterKit {
   root: THREE.Group;
+  /** Left and right rocket launch points. */
+  muzzles: THREE.Object3D[];
   setColor(color: string): void;
   /** progress: 0 = car, 1 = helicopter. rotorSpeed: 0…1. */
   update(progress: number, rotorSpeed: number, deltaSeconds: number): void;
@@ -195,9 +197,26 @@ export function createHelicopterKit(color: string): HelicopterKit {
   }
   root.add(skids);
 
+  // Rocket pods ride on the skid struts; rockets leave from their muzzles.
+  const podGeometry = new THREE.CylinderGeometry(0.16, 0.16, 1.2, 10);
+  podGeometry.rotateX(Math.PI / 2);
+  const muzzles = [-1, 1].map((side) => {
+    const pod = mesh(podGeometry, metal);
+    pod.position.set(side * 1.15, -0.2, -0.2);
+    skids.add(pod);
+    const pylon = mesh(new THREE.BoxGeometry(0.3, 0.06, 0.4), metal);
+    pylon.position.set(side * 0.98, -0.15, -0.2);
+    skids.add(pylon);
+    const muzzle = new THREE.Object3D();
+    muzzle.position.set(side * 1.15, -0.2, -0.9);
+    skids.add(muzzle);
+    return muzzle;
+  });
+
   let rotorAngle = 0;
   const kit: HelicopterKit = {
     root,
+    muzzles,
     setColor(next) {
       paint.color.set(next);
     },

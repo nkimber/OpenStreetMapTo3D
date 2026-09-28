@@ -12,12 +12,19 @@ const controls: Array<[string[], string]> = [
   [["A", "D"], "Turn left / right"],
   [["Space", "E"], "Climb"],
   [["Shift", "Q"], "Descend"],
+  [["F"], "Fire rockets (hold)"],
   [["T"], "Land, then transform"],
   [["H"], "Hide these controls"],
 ];
 
 /** Replaces the mini map while flying: flight readouts plus the key legend. */
-export function FlightHud({ flight }: { flight: FlightStats }) {
+export function FlightHud({
+  flight,
+  destroyedBuildings,
+}: {
+  flight: FlightStats;
+  destroyedBuildings: number;
+}) {
   const [controlsOpen, setControlsOpen] = useState(true);
   useEffect(() => {
     const toggle = (event: KeyboardEvent) => {
@@ -54,6 +61,8 @@ export function FlightHud({ flight }: { flight: FlightStats }) {
         {flight.form === "flying" && flight.grounded
           ? "Landed · press T to drive"
           : statusText[flight.form]}
+        {destroyedBuildings > 0 &&
+          ` · ${destroyedBuildings} building${destroyedBuildings === 1 ? "" : "s"} destroyed`}
       </small>
       <details
         open={controlsOpen}

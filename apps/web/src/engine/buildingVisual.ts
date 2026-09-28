@@ -208,6 +208,9 @@ export function createBuildingVisual(
   }
   const group = new THREE.Group();
   group.position.y = building.baseHeight + 0.02;
+  // Debris from a destroyed building reuses these colours.
+  group.userData.wallColor = appearance.wallColor;
+  group.userData.roofColor = appearance.roofColor;
   const wallPositions: number[] = [],
     wallUvs: number[] = [],
     details: number[] = [],

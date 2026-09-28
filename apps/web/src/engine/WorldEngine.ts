@@ -80,6 +80,11 @@ import {
   type FlightInput,
   type HelicopterKit,
 } from "./helicopter.js";
+import {
+  CombatEffects,
+  ROCKET_COOLDOWN_SECONDS,
+  ROCKET_SPEED,
+} from "./combat.js";
 
 const FIXED_STEP = 1 / 60;
 const RACE_COUNTDOWN_SECONDS = 3.3;
@@ -169,6 +174,7 @@ export interface EngineStats {
   race?: RaceStats;
   flight?: FlightStats;
   flightNotice?: string;
+  destroyedBuildings: number;
 }
 
 export interface FlightStats {
@@ -547,6 +553,14 @@ export class WorldEngine {
   private readonly helicopterKit: HelicopterKit;
   private readonly flightController: RAPIER.KinematicCharacterController;
   private baseFog = { near: 0, far: 0 };
+  private readonly combat: CombatEffects;
+  private readonly aimReticle: THREE.Mesh;
+  private rocketCooldown = 0;
+  private rocketsFired = 0;
+  private readonly shakeOffset = new THREE.Vector3();
+  private readonly destroyedBuildings = new Set<string>();
+  /** Fixed building body handle → building source id, for rocket hits. */
+  private readonly buildingBodies = new Map<number, string>();
 
   private constructor(
     private readonly container: HTMLElement,
@@ -589,6 +603,21 @@ export class WorldEngine {
     this.flightController = this.physics.createCharacterController(0.05);
     this.flightController.setSlideEnabled(true);
     this.flightController.setApplyImpulsesToDynamicBodies(false);
+    this.combat = new CombatEffects(this.scene, (x, z) =>
+      sampleTerrainPlan(this.plan.terrain, x, z),
+    );
+    this.aimReticle = new THREE.Mesh(
+      new THREE.RingGeometry(1.1, 1.5, 24),
+      new THREE.MeshBasicMaterial({
+        color: 0xffe27a,
+        transparent: true,
+        opacity: 0.85,
+        depthTest: false,
+      }),
+    );
+    this.aimReticle.renderOrder = 30;
+    this.aimReticle.visible = false;
+    this.scene.add(this.aimReticle);
     this.frameOverview();
 
     window.addEventListener("resize", this.resize);
@@ -797,6 +826,7 @@ export class WorldEngine {
       for (const building of group.children) {
         const id = building.userData.buildingSourceId as string | undefined;
         if (!id || (changed && !changed.has(id))) continue;
+        if (this.destroyedBuildings.has(id)) continue;
         let body = this.customizationBodies.get(id);
         building.traverse((object) => {
           if (!(object instanceof THREE.Mesh) || !object.userData.route) return;
@@ -1134,6 +1164,8 @@ export class WorldEngine {
     if (this.roadSigns) disposeRoadSigns(this.roadSigns);
     this.scene.remove(this.vehicleVisual.root);
     disposeVehicleModel(this.vehicleVisual.root);
+    this.combat.dispose();
+    disposeObject(this.aimReticle);
     this.disposed = true;
     this.builder.dispose();
     cancelAnimationFrame(this.animationFrame);
@@ -1376,6 +1408,7 @@ export class WorldEngine {
   }
 
   private createBuildingMesh(building: BuildingPlan): THREE.Group | undefined {
+    if (this.destroyedBuildings.has(building.sourceId)) return undefined;
     const feature = this.definition.features.find(
       (item) => item.sourceId === building.sourceId,
     );
@@ -1448,6 +1481,7 @@ export class WorldEngine {
       this.chunkGroups.delete(chunkId);
     }
     for (const body of this.chunkBodies.get(chunkId) ?? []) {
+      this.buildingBodies.delete(body.handle);
       this.physics.removeRigidBody(body);
     }
     this.chunkBodies.delete(chunkId);
@@ -1505,6 +1539,7 @@ export class WorldEngine {
       for (const index of chunk.buildingIndexes) {
         const building = this.plan.buildings[index];
         if (!building) continue;
+        if (this.destroyedBuildings.has(building.sourceId)) continue;
         const collider = buildingCollider(building);
         if (!collider) continue;
         const body = this.physics.createRigidBody(
@@ -1515,6 +1550,7 @@ export class WorldEngine {
           ),
         );
         this.physics.createCollider(collider, body);
+        this.buildingBodies.set(body.handle, building.sourceId);
         bodies.push(body);
       }
     }
@@ -2126,6 +2162,162 @@ export class WorldEngine {
     this.chassis.setNextKinematicRotation(this.flightQuaternion());
   }
 
+  /** Rebuilds every building destroyed by rockets. */
+  restoreDestroyedBuildings(): void {
+    const ids = new Set(this.destroyedBuildings);
+    if (!ids.size) return;
+    this.destroyedBuildings.clear();
+    for (const chunk of this.plan.chunks) {
+      if (
+        !chunk.buildingIndexes.some((index) =>
+          ids.has(this.plan.buildings[index]?.sourceId ?? ""),
+        )
+      )
+        continue;
+      for (const body of this.chunkBodies.get(chunk.id) ?? []) {
+        this.buildingBodies.delete(body.handle);
+        this.physics.removeRigidBody(body);
+      }
+      this.buildChunkPhysics(chunk);
+    }
+    this.refreshBuildingVisuals(ids);
+    this.syncCustomizationPhysics(ids);
+  }
+
+  private aimDirection(): THREE.Vector3 {
+    return new THREE.Vector3(0, 0, -1).applyEuler(
+      new THREE.Euler(
+        this.flightState.pitch * 0.5 - 0.05,
+        this.flightState.yaw,
+        0,
+        "YXZ",
+      ),
+    );
+  }
+
+  private wantsToFire(): boolean {
+    if (this.garageOpen || this.flightForm !== "flying") return false;
+    if (this.keys.has("KeyF")) return true;
+    if (!this.inputPreferences.gamepadEnabled) return false;
+    const gamepad = [...(navigator.getGamepads?.() ?? [])].find(
+      (candidate) => candidate?.connected && candidate.mapping === "standard",
+    );
+    return Boolean(
+      gamepad?.buttons[0]?.pressed || gamepad?.buttons[5]?.pressed,
+    );
+  }
+
+  private fireRocket(): void {
+    const muzzle =
+      this.helicopterKit.muzzles[
+        this.rocketsFired % this.helicopterKit.muzzles.length
+      ]!;
+    this.rocketsFired += 1;
+    this.vehicleVisual.root.updateMatrixWorld(true);
+    const origin = muzzle.getWorldPosition(new THREE.Vector3());
+    const { x, y, z } = this.flightState.velocity;
+    const velocity = this.aimDirection()
+      .multiplyScalar(ROCKET_SPEED)
+      .add(new THREE.Vector3(x, y, z));
+    this.combat.launch(origin, velocity);
+  }
+
+  private stepRockets(dt: number): void {
+    this.rocketCooldown = Math.max(0, this.rocketCooldown - dt);
+    if (this.rocketCooldown === 0 && this.wantsToFire()) {
+      this.fireRocket();
+      this.rocketCooldown = ROCKET_COOLDOWN_SECONDS;
+    }
+    for (const rocket of [...this.combat.rockets]) {
+      const step = rocket.velocity.clone().multiplyScalar(dt);
+      const length = step.length();
+      const direction = step.clone().divideScalar(length || 1);
+      const hit = this.physics.castRay(
+        new RAPIER.Ray(rocket.position, direction),
+        length,
+        true,
+        undefined,
+        undefined,
+        undefined,
+        this.chassis,
+      );
+      if (hit) {
+        const point = rocket.position
+          .clone()
+          .addScaledVector(direction, hit.timeOfImpact);
+        this.combat.removeRocket(rocket);
+        this.rocketImpact(point, hit.collider);
+        continue;
+      }
+      if (
+        !this.combat.moveRocket(rocket, rocket.position.clone().add(step), dt)
+      ) {
+        this.combat.removeRocket(rocket);
+        this.combat.explode(rocket.position, 0.6);
+      }
+    }
+  }
+
+  private rocketImpact(point: THREE.Vector3, collider: RAPIER.Collider): void {
+    const body = collider.parent();
+    let sourceId = body ? this.buildingBodies.get(body.handle) : undefined;
+    if (!sourceId && body)
+      for (const [id, candidate] of this.customizationBodies)
+        if (candidate.handle === body.handle) sourceId = id;
+    if (sourceId) this.destroyBuilding(sourceId, point);
+    else this.combat.explode(point, 1, point.distanceTo(this.camera.position));
+  }
+
+  private destroyBuilding(sourceId: string, impact: THREE.Vector3): void {
+    if (this.destroyedBuildings.has(sourceId)) return;
+    this.destroyedBuildings.add(sourceId);
+    let wallColor = "#c9c2b5";
+    let roofColor = "#555049";
+    for (const group of this.chunkGroups.values())
+      for (const child of [...group.children]) {
+        if (child.userData.buildingSourceId !== sourceId) continue;
+        child.traverse((object) => {
+          if (object.userData.wallColor) wallColor = object.userData.wallColor;
+          if (object.userData.roofColor) roofColor = object.userData.roofColor;
+        });
+        const index = this.selectable.indexOf(child);
+        if (index >= 0) this.selectable.splice(index, 1);
+        child.removeFromParent();
+        disposeObject(child);
+      }
+    for (const building of this.plan.buildings)
+      if (building.sourceId === sourceId)
+        this.combat.shatter(building, impact, wallColor, roofColor);
+    for (const [chunkId, bodies] of this.chunkBodies) {
+      const kept = bodies.filter((body) => {
+        if (this.buildingBodies.get(body.handle) !== sourceId) return true;
+        this.buildingBodies.delete(body.handle);
+        this.physics.removeRigidBody(body);
+        return false;
+      });
+      this.chunkBodies.set(chunkId, kept);
+    }
+    const custom = this.customizationBodies.get(sourceId);
+    if (custom) {
+      this.physics.removeRigidBody(custom);
+      this.customizationBodies.delete(sourceId);
+    }
+    if (this.selectedBuildingId === sourceId) {
+      this.selectedBuildingId = undefined;
+      this.callbacks.onSelect({});
+    }
+  }
+
+  private updateAimReticle(): void {
+    this.aimReticle.visible =
+      this.mode === "drive" && this.flightForm === "flying";
+    if (!this.aimReticle.visible) return;
+    this.aimReticle.position
+      .copy(this.vehicleVisual.root.position)
+      .addScaledVector(this.aimDirection(), 70);
+    this.aimReticle.quaternion.copy(this.camera.quaternion);
+  }
+
   private foldWheels(fold: number): void {
     this.vehicleVisual.wheels.forEach((wheel, index) => {
       const connection =
@@ -2161,8 +2353,16 @@ export class WorldEngine {
       .multiplyScalar(1 + 0.25 * flourish)
       .applyAxisAngle(up, this.flightState.yaw);
     const smoothing = 1 - Math.exp(-deltaSeconds * 4);
+    this.camera.position.sub(this.shakeOffset);
     this.camera.position.lerp(root.position.clone().add(offset), smoothing);
     this.camera.lookAt(root.position.clone().add(new THREE.Vector3(0, 1.2, 0)));
+    const shake = this.combat.shake;
+    this.shakeOffset.set(
+      (Math.random() - 0.5) * shake,
+      (Math.random() - 0.5) * shake,
+      (Math.random() - 0.5) * shake,
+    );
+    this.camera.position.add(this.shakeOffset);
     if (this.scene.fog instanceof THREE.Fog) {
       const altitude = Math.max(
         0,
@@ -2253,6 +2453,7 @@ export class WorldEngine {
   }
 
   private stepPhysics(): void {
+    this.stepRockets(FIXED_STEP);
     if (this.flightForm !== "car") {
       this.stepHelicopter(FIXED_STEP);
       this.physics.step();
@@ -2939,6 +3140,7 @@ export class WorldEngine {
       recoveryCount: this.recoveryCount,
       lastRebuiltChunks: this.lastRebuiltChunks,
       inputSource: this.inputSource,
+      destroyedBuildings: this.destroyedBuildings.size,
       ...(this.race ? { race: this.raceStats(this.race) } : {}),
       ...(this.flightForm !== "car" ? { flight: this.flightStats() } : {}),
       ...(this.flightNotice && this.flightNotice.expiresAt > performance.now()
@@ -2966,6 +3168,8 @@ export class WorldEngine {
       this.accumulator -= FIXED_STEP;
     }
     this.syncVehicle(deltaSeconds);
+    this.combat.update(deltaSeconds);
+    this.updateAimReticle();
     if (this.mode !== "drive") this.controls.update();
     this.renderer.render(this.scene, this.camera);
     this.statsElapsed += deltaSeconds;

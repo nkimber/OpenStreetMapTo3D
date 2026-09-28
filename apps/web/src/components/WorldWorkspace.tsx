@@ -68,6 +68,7 @@ const emptyStats: EngineStats = {
   recoveryCount: 0,
   lastRebuiltChunks: 0,
   inputSource: "keyboard",
+  destroyedBuildings: 0,
 };
 
 function ordinal(value: number): string {
@@ -852,7 +853,7 @@ export function WorldWorkspace({
             <strong>{flying ? "Helicopter" : "Drive"}</strong>
             <span>
               {flying
-                ? "Land, then press T to drive again · R returns the car to the road"
+                ? "F fires rockets · Land, then press T to drive again · R returns the car to the road"
                 : "WASD / arrows · Space handbrake · T transform · R safe reset · Click a building to enhance"}
             </span>
             {Object.keys(enhancementProposals).length > 0 && (
@@ -913,6 +914,17 @@ export function WorldWorkspace({
               <button onClick={() => engineRef.current?.resetVehicle()}>
                 Reset car
               </button>
+              {stats.destroyedBuildings > 0 && (
+                <button
+                  onClick={(event) => {
+                    event.currentTarget.blur();
+                    engineRef.current?.restoreDestroyedBuildings();
+                  }}
+                  title="Put back every building destroyed by rockets"
+                >
+                  Rebuild {stats.destroyedBuildings}
+                </button>
+              )}
               <button onClick={() => engineRef.current?.resetVehicle(true)}>
                 Return to spawn
               </button>
@@ -1165,7 +1177,10 @@ export function WorldWorkspace({
             </strong>
           )}
           {flight ? (
-            <FlightHud flight={flight} />
+            <FlightHud
+              flight={flight}
+              destroyedBuildings={stats.destroyedBuildings}
+            />
           ) : (
             <DriveMiniMap
               features={definition.features}
