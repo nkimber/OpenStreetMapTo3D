@@ -942,8 +942,19 @@ button:disabled {
   color: #ffb7a7;
 }
 .drive-help button.race-start {
-  color: #111;
-  background: linear-gradient(135deg, #fff 0 48%, #1d2225 48% 52%, #fff 52%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #231a00;
+  background: #ffd24f;
+}
+.drive-help button.race-start::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background: repeating-conic-gradient(#1d2225 0 25%, #fff 0 50%) 0 0 / 7px 7px;
+  box-shadow: 0 0 0 1px #1d2225;
 }
 .drive-help button.race-cancel {
   color: #ffd8d1;

@@ -491,6 +491,8 @@ export function WorldWorkspace({
       setRaceError(undefined);
       return;
     }
+    // Racing is car-only, so the helicopter folds straight back into the car.
+    if (flying) engine.leaveHelicopter();
     openRaceSetup();
   };
   const beginRace = async () => {
@@ -902,7 +904,7 @@ export function WorldWorkspace({
               </button>
               <button
                 className={stats.race ? "race-cancel" : "race-start"}
-                disabled={racePreparing || flying}
+                disabled={racePreparing}
                 onClick={toggleRace}
               >
                 {racePreparing

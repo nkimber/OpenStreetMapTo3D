@@ -1915,6 +1915,11 @@ export class WorldEngine {
       this.renderer.domElement.releasePointerCapture(event.pointerId);
   };
 
+  /** Instantly returns to the car, e.g. before a race. */
+  leaveHelicopter(): void {
+    if (this.flightForm !== "car") this.revertToCar(true);
+  }
+
   /** Transforms between car and helicopter; returns a reason when it can't. */
   toggleHelicopter(): string | undefined {
     const reason = this.helicopterBlocker();
