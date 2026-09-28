@@ -307,3 +307,17 @@ export const ApiErrorSchema = z.object({
 });
 
 export type ApiError = z.infer<typeof ApiErrorSchema>;
+
+/**
+ * Streams, rivers, ditches and drains are mapped as centre lines, not areas.
+ * Filling them in would paint the land they wind around as water.
+ */
+export function isLinearWaterway(tags: Record<string, string>): boolean {
+  return (
+    Boolean(tags.waterway) &&
+    tags.waterway !== "riverbank" &&
+    tags.waterway !== "dock" &&
+    tags.waterway !== "boatyard" &&
+    tags.area !== "yes"
+  );
+}

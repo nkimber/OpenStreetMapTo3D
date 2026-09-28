@@ -15,6 +15,34 @@ const settings: GenerationSettings = {
 const anchor = { longitude: -75, latitude: 40, height: 0 };
 
 describe("representative neighborhood fixtures", () => {
+  it("does not flood land enclosed by an old stream polygon", () => {
+    const ring: [number, number][] = [
+      [-75, 40],
+      [-74.998, 40],
+      [-74.998, 40.002],
+      [-75, 40.002],
+      [-75, 40],
+    ];
+    const feature = (sourceId: string, tags: Record<string, string>) => ({
+      sourceId,
+      sourceType: "way" as const,
+      kind: "water" as const,
+      geometry: { type: "Polygon" as const, coordinates: [ring] },
+      tags,
+      facts: {},
+      warnings: [],
+    });
+    const plan = buildWorldPlan(
+      [
+        feature("osm:way:1", { waterway: "stream" }),
+        feature("osm:way:2", { natural: "water", water: "pond" }),
+      ],
+      anchor,
+      settings,
+    );
+    expect(plan.land.map((area) => area.sourceId)).toEqual(["osm:way:2"]);
+  });
+
   it("builds a T-junction and round cul-de-sac caps", () => {
     const plan = buildWorldPlan(
       representativeFixtures.suburban,

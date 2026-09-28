@@ -8,6 +8,7 @@ import type {
   Wgs84Bounds,
   WorldOverride,
 } from "@osm3d/contracts";
+import { isLinearWaterway } from "@osm3d/contracts";
 import { wgs84ToLocal } from "@osm3d/geo";
 import {
   buildTerrainPlan,
@@ -38,7 +39,7 @@ export type {
   TerrainRoadProfile,
 } from "./terrain.js";
 
-export const WORLD_GENERATOR_VERSION = "0.6.0";
+export const WORLD_GENERATOR_VERSION = "0.6.1";
 export const DEFAULT_CHUNK_SIZE_METERS = 256;
 export const DEFAULT_TERRAIN_CELLS_PER_CHUNK = 64;
 
@@ -985,7 +986,11 @@ export function buildWorldPlan(
             : {}),
         });
       });
-    } else if (feature.kind === "land" || feature.kind === "water") {
+    } else if (
+      (feature.kind === "land" || feature.kind === "water") &&
+      // Older imports closed stream lines into polygons; never fill those.
+      !isLinearWaterway(feature.tags)
+    ) {
       const areaKind = feature.kind;
       polygonRings(feature, anchor).forEach((rings, polygonIndex) => {
         if ((rings[0]?.length ?? 0) < 4) return;

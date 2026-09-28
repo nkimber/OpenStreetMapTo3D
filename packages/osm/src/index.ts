@@ -5,6 +5,7 @@ import type {
   GeoJsonPosition,
   NormalizedFeature,
 } from "@osm3d/contracts";
+import { isLinearWaterway } from "@osm3d/contracts";
 
 interface OverpassGeometryPoint {
   lat: number;
@@ -207,7 +208,16 @@ function elementGeometry(
   if (element.type === "relation") return relationGeometry(element);
   const points = element.geometry ? pointsToPositions(element.geometry) : [];
   if (points.length < 2) return undefined;
-  if (polygonKinds.has(kind) && points.length >= 3) {
+  // Only closed ways describe areas; an open way (such as a stream) stays a line.
+  const first = points[0]!;
+  const last = points.at(-1)!;
+  const closed = first[0] === last[0] && first[1] === last[1];
+  if (
+    polygonKinds.has(kind) &&
+    points.length >= 4 &&
+    closed &&
+    !isLinearWaterway(element.tags ?? {})
+  ) {
     return { type: "Polygon", coordinates: [closeRing(points)] };
   }
   return { type: "LineString", coordinates: points };

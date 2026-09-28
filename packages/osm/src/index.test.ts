@@ -2,6 +2,39 @@ import { describe, expect, it } from "vitest";
 import { normalizeOverpass, parseOsmNumber } from "./index.js";
 
 describe("OSM normalization", () => {
+  it("keeps streams as lines instead of filling the land they wind around", () => {
+    const loop = [
+      { lat: 40, lon: -75 },
+      { lat: 40, lon: -74.99 },
+      { lat: 40.01, lon: -74.99 },
+      { lat: 40.01, lon: -75 },
+    ];
+    const result = normalizeOverpass({
+      elements: [
+        { type: "way", id: 20, tags: { waterway: "stream" }, geometry: loop },
+        {
+          type: "way",
+          id: 21,
+          tags: { waterway: "stream" },
+          geometry: [...loop, loop[0]!],
+        },
+        {
+          type: "way",
+          id: 22,
+          tags: { natural: "water", water: "pond" },
+          geometry: [...loop, loop[0]!],
+        },
+        { type: "way", id: 23, tags: { natural: "tree_row" }, geometry: loop },
+      ],
+    });
+    expect(result.features.map((feature) => feature.geometry.type)).toEqual([
+      "LineString",
+      "LineString",
+      "Polygon",
+      "LineString",
+    ]);
+  });
+
   it("parses metric and imperial values", () => {
     expect(parseOsmNumber("12 m")).toBe(12);
     expect(parseOsmNumber("10' 6\"")).toBeCloseTo(3.2004, 4);
