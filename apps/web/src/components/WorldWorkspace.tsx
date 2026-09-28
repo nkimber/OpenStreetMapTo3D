@@ -22,6 +22,7 @@ import {
   enhancementTilesForPose,
 } from "../driveEnhancement.js";
 import { DriveMiniMap } from "./DriveMiniMap.js";
+import { FlightHud } from "./FlightHud.js";
 import { Garage } from "./Garage.js";
 import { BuildingEditor } from "./BuildingEditor.js";
 import { BuildingEnhancementPanel } from "./BuildingEnhancementPanel.js";
@@ -155,8 +156,6 @@ export function WorldWorkspace({
   const automaticEnhancementActiveRef = useRef(
     automaticEnhancementEnabled && mode === "drive",
   );
-  automaticEnhancementActiveRef.current =
-    automaticEnhancementEnabled && mode === "drive";
   const enhancementQueueRef = useRef<
     Array<{ key: string; center: [number, number] }>
   >([]);
@@ -166,6 +165,11 @@ export function WorldWorkspace({
   const [driveEnhancementProgress, setDriveEnhancementProgress] =
     useState<DriveEnhancementProgress>(emptyDriveEnhancementProgress);
   const [stats, setStats] = useState(emptyStats);
+  const flight = mode === "drive" ? stats.flight : undefined;
+  const flying = Boolean(flight);
+  // Aerial enhancement is tuned for driving speed, so it pauses while flying.
+  automaticEnhancementActiveRef.current =
+    automaticEnhancementEnabled && mode === "drive" && !flying;
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>(
     definition.diagnostics,
   );
@@ -302,11 +306,16 @@ export function WorldWorkspace({
   }, [automaticEnhancementEnabled]);
 
   useEffect(() => {
-    if (mode !== "drive") enhancementAbortRef.current?.abort();
-  }, [mode]);
+    if (mode !== "drive" || flying) enhancementAbortRef.current?.abort();
+  }, [flying, mode]);
 
   useEffect(() => {
-    if (mode !== "drive" || !automaticEnhancementEnabled || !engineReady)
+    if (
+      mode !== "drive" ||
+      flying ||
+      !automaticEnhancementEnabled ||
+      !engineReady
+    )
       return;
     const tiles = enhancementTilesForPose(
       stats.vehicleMapPose,
@@ -331,6 +340,7 @@ export function WorldWorkspace({
     definition.world.bounds,
     drainEnhancementQueue,
     engineReady,
+    flying,
     mode,
     stats.vehicleMapPose.headingDegrees,
     stats.vehicleMapPose.latitude,
@@ -839,10 +849,11 @@ export function WorldWorkspace({
       {mode === "drive" ? (
         <>
           <section className="drive-help glass-panel">
-            <strong>Drive</strong>
+            <strong>{flying ? "Helicopter" : "Drive"}</strong>
             <span>
-              WASD / arrows · Space handbrake · R safe reset · Click a building
-              to enhance
+              {flying
+                ? "Land, then press T to drive again · R returns the car to the road"
+                : "WASD / arrows · Space handbrake · T transform · R safe reset · Click a building to enhance"}
             </span>
             {Object.keys(enhancementProposals).length > 0 && (
               <small>
@@ -868,6 +879,17 @@ export function WorldWorkspace({
             )}
             <div className="drive-actions">
               <button
+                className="transform-button"
+                disabled={Boolean(stats.race) || racePreparing}
+                onClick={(event) => {
+                  event.currentTarget.blur();
+                  engineRef.current?.toggleHelicopter();
+                }}
+                title="Transform between car and helicopter (T)"
+              >
+                {flying ? "Land & drive" : "Fly"} (T)
+              </button>
+              <button
                 aria-pressed={automaticEnhancementEnabled}
                 className={automaticEnhancementEnabled ? "active" : ""}
                 onClick={() =>
@@ -879,7 +901,7 @@ export function WorldWorkspace({
               </button>
               <button
                 className={stats.race ? "race-cancel" : "race-start"}
-                disabled={racePreparing}
+                disabled={racePreparing || flying}
                 onClick={toggleRace}
               >
                 {racePreparing
@@ -1137,16 +1159,25 @@ export function WorldWorkspace({
               )}
             </section>
           )}
-          <DriveMiniMap
-            features={definition.features}
-            pose={stats.vehicleMapPose}
-            {...(stats.race ? { race: stats.race } : {})}
-            {...(raceSetupOpen && selectedRaceCandidate
-              ? {
-                  previewRoute: selectedRaceCandidate.route,
-                }
-              : {})}
-          />
+          {stats.flightNotice && (
+            <strong className="flight-notice" role="status">
+              {stats.flightNotice}
+            </strong>
+          )}
+          {flight ? (
+            <FlightHud flight={flight} />
+          ) : (
+            <DriveMiniMap
+              features={definition.features}
+              pose={stats.vehicleMapPose}
+              {...(stats.race ? { race: stats.race } : {})}
+              {...(raceSetupOpen && selectedRaceCandidate
+                ? {
+                    previewRoute: selectedRaceCandidate.route,
+                  }
+                : {})}
+            />
+          )}
         </>
       ) : mode === "edit" && engineReady && engineRef.current ? (
         <BuildingEditor

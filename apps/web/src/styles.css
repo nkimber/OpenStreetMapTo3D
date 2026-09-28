@@ -1663,3 +1663,75 @@ button:disabled {
   justify-content: flex-end;
   gap: 8px;
 }
+
+.drive-help button.transform-button {
+  color: #fff;
+  background: linear-gradient(135deg, #2f6fdd, #1b9c8a);
+}
+.drive-help button:disabled {
+  opacity: 0.5;
+}
+.flight-notice {
+  position: absolute;
+  z-index: 8;
+  top: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  padding: 8px 16px;
+  color: #fff;
+  background: rgba(10, 28, 19, 0.82);
+  font-size: 13px;
+  pointer-events: none;
+}
+.flight-hud {
+  position: absolute;
+  z-index: 6;
+  right: 18px;
+  bottom: 58px;
+  display: grid;
+  gap: 10px;
+  width: min(260px, calc(100vw - 36px));
+  padding: 13px 16px;
+}
+.flight-hud-readouts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  text-align: center;
+}
+.flight-hud-readouts strong {
+  display: block;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.flight-hud-readouts small,
+.flight-hud-status {
+  color: #b6c7bd;
+  font-size: 11px;
+}
+.flight-hud summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+.flight-hud dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 8px 0 0;
+  font-size: 11px;
+}
+.flight-hud dt {
+  font-weight: 750;
+}
+.flight-hud dd {
+  margin: 0;
+  color: #b6c7bd;
+}
+.flight-hud kbd {
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-family: inherit;
+}

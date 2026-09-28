@@ -66,6 +66,20 @@ import {
   type VehicleHandling,
   type ModelVisual,
 } from "./vehicleModels.js";
+import {
+  MAX_FLIGHT_ALTITUDE,
+  TRANSFORM_SECONDS,
+  boundaryPush,
+  createFlightState,
+  createHelicopterKit,
+  flightAirspeedKph,
+  headingDegrees,
+  neutralFlightInput,
+  stepFlight,
+  type FlightForm,
+  type FlightInput,
+  type HelicopterKit,
+} from "./helicopter.js";
 
 const FIXED_STEP = 1 / 60;
 const RACE_COUNTDOWN_SECONDS = 3.3;
@@ -153,6 +167,16 @@ export interface EngineStats {
   lastRebuiltChunks: number;
   inputSource: "keyboard" | "gamepad";
   race?: RaceStats;
+  flight?: FlightStats;
+  flightNotice?: string;
+}
+
+export interface FlightStats {
+  form: Exclude<FlightForm, "car">;
+  altitudeMeters: number;
+  airspeedKph: number;
+  headingDegrees: number;
+  grounded: boolean;
 }
 
 export interface EngineSelection {
@@ -512,6 +536,17 @@ export class WorldEngine {
   private safeElapsed = 0;
   private buildDurationMs: number;
   private lastRebuiltChunks: number;
+  private flightForm: FlightForm = "car";
+  private transformElapsed = 0;
+  private flightState = createFlightState();
+  private flightGrounded = true;
+  private flightTouchdown = false;
+  private flightClearance = 0;
+  private flightNotice: { text: string; expiresAt: number } | undefined;
+  private wheelsFolded = false;
+  private readonly helicopterKit: HelicopterKit;
+  private readonly flightController: RAPIER.KinematicCharacterController;
+  private baseFog = { near: 0, far: 0 };
 
   private constructor(
     private readonly container: HTMLElement,
@@ -549,6 +584,11 @@ export class WorldEngine {
     this.vehicle = vehicle.controller;
     this.vehicleVisual = vehicle.visual;
     this.scene.add(this.vehicleVisual.root);
+    this.helicopterKit = createHelicopterKit(this.vehicleChoice.color);
+    this.vehicleVisual.root.add(this.helicopterKit.root);
+    this.flightController = this.physics.createCharacterController(0.05);
+    this.flightController.setSlideEnabled(true);
+    this.flightController.setApplyImpulsesToDynamicBodies(false);
     this.frameOverview();
 
     window.addEventListener("resize", this.resize);
@@ -604,8 +644,12 @@ export class WorldEngine {
     const previous = this.vehicleVisual.root;
     model.root.position.copy(previous.position);
     model.root.quaternion.copy(previous.quaternion);
+    previous.remove(this.helicopterKit.root);
     this.scene.remove(previous);
     disposeVehicleModel(previous);
+    model.root.add(this.helicopterKit.root);
+    this.helicopterKit.setColor(choice.color);
+    this.wheelsFolded = this.flightForm !== "car";
     this.vehicleVisual = model;
     this.loadedVehicle = model;
     this.vehicleChoice = { ...choice };
@@ -631,12 +675,15 @@ export class WorldEngine {
       );
     }
     this.scene.add(model.root);
-    this.chassis.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    this.chassis.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    if (this.flightForm === "car") {
+      this.chassis.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      this.chassis.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    }
   }
 
   setMode(mode: EngineMode): void {
     const previousMode = this.mode;
+    if (mode !== "drive" && this.flightForm !== "car") this.revertToCar(true);
     if (mode !== "drive") this.cancelRace();
     if (mode !== "drive") this.raceSetupOpen = false;
     this.mode = mode;
@@ -866,6 +913,7 @@ export class WorldEngine {
   }
 
   resetVehicle(toOriginalSpawn = false): void {
+    if (this.flightForm !== "car") this.revertToCar(true);
     if (this.race && toOriginalSpawn) this.cancelRace();
     const position = toOriginalSpawn ? this.spawnPosition : this.safePosition;
     const rotation = toOriginalSpawn ? this.spawnRotation : this.safeRotation;
@@ -924,6 +972,8 @@ export class WorldEngine {
   async startRace(options: RaceStartOptions = {}): Promise<string | undefined> {
     if (this.mode !== "drive")
       return "Enter Drive mode before starting a race.";
+    if (this.flightForm !== "car")
+      return "Land and transform back into a car before racing.";
     this.cancelRace();
     const revision = ++this.raceLoadRevision;
     const course =
@@ -1118,10 +1168,11 @@ export class WorldEngine {
     const size = this.worldSize();
     const sceneScale = Math.max(size.width, size.depth);
     this.scene.background = new THREE.Color(night ? 0x07111f : 0xbad7e8);
+    this.baseFog = { near: sceneScale * 1.15, far: sceneScale * 3 };
     this.scene.fog = new THREE.Fog(
       night ? 0x07111f : 0xbad7e8,
-      sceneScale * 1.15,
-      sceneScale * 3,
+      this.baseFog.near,
+      this.baseFog.far,
     );
     const hemisphere = new THREE.HemisphereLight(
       night ? 0x7fa9ff : 0xeaf6ff,
@@ -1706,6 +1757,8 @@ export class WorldEngine {
     )
       event.preventDefault();
     if (event.code === "KeyR") this.resetVehicle(event.shiftKey);
+    if (event.code === "KeyT" && !event.repeat && this.mode === "drive")
+      this.toggleHelicopter();
   };
 
   private readonly keyUp = (event: KeyboardEvent): void => {
@@ -1826,6 +1879,322 @@ export class WorldEngine {
       this.renderer.domElement.releasePointerCapture(event.pointerId);
   };
 
+  /** Transforms between car and helicopter; returns a reason when it can't. */
+  toggleHelicopter(): string | undefined {
+    const reason = this.helicopterBlocker();
+    if (reason) {
+      this.showFlightNotice(reason);
+      return reason;
+    }
+    if (this.flightForm === "car") this.beginRising();
+    else {
+      this.flightForm = "landing";
+      this.transformElapsed = 0;
+    }
+    return undefined;
+  }
+
+  private helicopterBlocker(): string | undefined {
+    if (this.mode !== "drive") return "Enter Drive mode first.";
+    if (this.race || this.raceSetupOpen) return "Leave the race first.";
+    if (this.flightForm === "rising" || this.flightForm === "landing")
+      return "Already transforming.";
+    if (this.flightForm === "flying")
+      return this.flightGrounded ? undefined : "Land before transforming back.";
+    if (Math.abs(this.vehicle.currentVehicleSpeed()) > 3)
+      return "Slow down to transform.";
+    const position = this.chassis.translation();
+    const overhead = this.physics.castRay(
+      new RAPIER.Ray(
+        { x: position.x, y: position.y + 0.6, z: position.z },
+        { x: 0, y: 1, z: 0 },
+      ),
+      14,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      this.chassis,
+    );
+    return overhead ? "Need clear sky above to transform." : undefined;
+  }
+
+  private showFlightNotice(text: string, seconds = 2.5): void {
+    this.flightNotice = {
+      text,
+      expiresAt: performance.now() + seconds * 1_000,
+    };
+  }
+
+  private beginRising(): void {
+    const rotation = this.chassis.rotation();
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(
+      new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
+    );
+    this.flightState = createFlightState(Math.atan2(-forward.x, -forward.z));
+    this.flightForm = "rising";
+    this.transformElapsed = 0;
+    this.flightGrounded = true;
+    this.flightTouchdown = true;
+    this.flightClearance = 0;
+    this.wheelsFolded = true;
+    this.keys.clear();
+    this.currentInput = { ...neutralVehicleInput };
+    this.chassis.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.chassis.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.chassis.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+    this.chassis.setRotation(this.flightQuaternion(true), true);
+  }
+
+  private revertToCar(instant = false): void {
+    const airborne = !this.flightGrounded;
+    this.chassis.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
+    this.chassis.setRotation(this.flightQuaternion(true), true);
+    if (instant && airborne) {
+      this.chassis.setTranslation(this.safePosition, true);
+      this.chassis.setRotation(this.safeRotation, true);
+    }
+    this.chassis.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.chassis.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.flightForm = "car";
+    this.transformElapsed = 0;
+    this.flightState = createFlightState(this.flightState.yaw);
+    this.flightGrounded = true;
+    this.unsafeElapsed = 0;
+    this.keys.clear();
+    if (this.scene.fog instanceof THREE.Fog) {
+      this.scene.fog.near = this.baseFog.near;
+      this.scene.fog.far = this.baseFog.far;
+    }
+  }
+
+  private flightQuaternion(level = false): THREE.Quaternion {
+    const { pitch, yaw, roll } = this.flightState;
+    return new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(level ? 0 : pitch, yaw, level ? 0 : roll, "YXZ"),
+    );
+  }
+
+  private transformProgress(): number {
+    if (this.flightForm === "car") return 0;
+    if (this.flightForm === "flying") return 1;
+    const fraction = Math.min(1, this.transformElapsed / TRANSFORM_SECONDS);
+    return this.flightForm === "rising" ? fraction : 1 - fraction;
+  }
+
+  private rotorSpeed(): number {
+    return THREE.MathUtils.smoothstep(this.transformProgress(), 0.65, 1);
+  }
+
+  private flightInput(): FlightInput {
+    if (this.garageOpen) return neutralFlightInput;
+    const deadzone = (value: number) => (Math.abs(value) < 0.15 ? 0 : value);
+    const gamepad = this.inputPreferences.gamepadEnabled
+      ? [...(navigator.getGamepads?.() ?? [])].find(
+          (candidate) =>
+            candidate?.connected && candidate.mapping === "standard",
+        )
+      : undefined;
+    if (gamepad) {
+      const input = {
+        forward: -deadzone(gamepad.axes[1] ?? 0),
+        yaw:
+          -deadzone(gamepad.axes[0] ?? 0) *
+          this.inputPreferences.steeringSensitivity,
+        lift:
+          (gamepad.buttons[7]?.value ?? 0) - (gamepad.buttons[6]?.value ?? 0),
+      };
+      if (input.forward || input.yaw || Math.abs(input.lift) > 0.05) {
+        this.inputSource = "gamepad";
+        return input;
+      }
+    }
+    this.inputSource = "keyboard";
+    const held = (...codes: string[]) =>
+      codes.some((code) => this.keys.has(code)) ? 1 : 0;
+    return {
+      forward: held("KeyW", "ArrowUp") - held("KeyS", "ArrowDown"),
+      yaw:
+        (held("KeyA", "ArrowLeft") - held("KeyD", "ArrowRight")) *
+        this.inputPreferences.steeringSensitivity,
+      lift: held("Space", "KeyE") - held("ShiftLeft", "ShiftRight", "KeyQ"),
+    };
+  }
+
+  private groundClearance(position: RAPIER.Vector): number {
+    const bottom = 0.45 - this.vehicleHandling.centerOfMassOffsetY;
+    const hit = this.physics.castRay(
+      new RAPIER.Ray(position, { x: 0, y: -1, z: 0 }),
+      bottom + 50,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      this.chassis,
+    );
+    return hit ? hit.timeOfImpact - bottom : 50;
+  }
+
+  private stepHelicopter(dt: number): void {
+    const position = this.chassis.translation();
+    let input = neutralFlightInput;
+    if (this.flightForm === "flying") input = this.flightInput();
+    else {
+      this.transformElapsed += dt;
+      if (this.transformElapsed >= TRANSFORM_SECONDS) {
+        if (this.flightForm === "landing") {
+          this.revertToCar();
+          return;
+        }
+        this.flightForm = "flying";
+        this.flightState.velocity.y = 4; // Lift-off hop.
+      }
+    }
+    this.flightState = stepFlight(this.flightState, input, dt);
+    const state = this.flightState;
+    if (this.flightForm !== "flying") {
+      state.velocity = { x: 0, y: 0, z: 0 };
+      state.pitch = state.roll = 0;
+    }
+    const size = this.worldSize();
+    if (
+      boundaryPush(
+        state,
+        position,
+        {
+          centerX: size.centerX,
+          centerZ: size.centerZ,
+          halfWidth: size.width / 2,
+          halfDepth: size.depth / 2,
+        },
+        dt,
+      )
+    )
+      this.showFlightNotice("Edge of the map, turning back", 0.5);
+    const altitude =
+      position.y - sampleTerrainPlan(this.plan.terrain, position.x, position.z);
+    if (altitude > MAX_FLIGHT_ALTITUDE && state.velocity.y > 0) {
+      state.velocity.y = 0;
+      this.showFlightNotice("Maximum altitude", 0.5);
+    }
+    // Auto-flare: descent slows near the ground so landings are always soft.
+    state.velocity.y = Math.max(
+      state.velocity.y,
+      -1.2 - this.flightClearance * 0.9,
+    );
+    const desired = {
+      x: state.velocity.x * dt,
+      y: state.velocity.y * dt,
+      z: state.velocity.z * dt,
+    };
+    this.flightController.computeColliderMovement(
+      this.chassis.collider(0),
+      desired,
+      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+    );
+    const move = this.flightController.computedMovement();
+    // Bump off anything we hit instead of crashing outright.
+    const horizontalSpeed = Math.hypot(state.velocity.x, state.velocity.z);
+    const blockedX = Math.abs(move.x - desired.x) > 1e-3;
+    const blockedZ = Math.abs(move.z - desired.z) > 1e-3;
+    if ((blockedX || blockedZ) && horizontalSpeed > 12)
+      this.showFlightNotice("Bump!", 1);
+    if (blockedX) state.velocity.x *= -0.25;
+    if (blockedZ) state.velocity.z *= -0.25;
+    if (Math.abs(move.y - desired.y) > 1e-3) {
+      if (desired.y < 0) this.flightTouchdown = true;
+      state.velocity.y = 0;
+    }
+    if (move.y > 1e-3) this.flightTouchdown = false;
+    const next = {
+      x: position.x + move.x,
+      y: position.y + move.y,
+      z: position.z + move.z,
+    };
+    const clearance = this.groundClearance(next);
+    this.flightClearance = clearance;
+    // The centre ray can miss when resting on an edge, so contacts count too.
+    this.flightGrounded =
+      clearance < 0.2 ||
+      this.flightTouchdown ||
+      this.flightController.computedGrounded();
+    // Level out near the ground so the tilt never digs the nose in.
+    const tilt = Math.min(1, Math.max(0, clearance / 2));
+    state.pitch *= tilt;
+    state.roll *= tilt;
+    this.chassis.setNextKinematicTranslation(next);
+    this.chassis.setNextKinematicRotation(this.flightQuaternion());
+  }
+
+  private foldWheels(fold: number): void {
+    this.vehicleVisual.wheels.forEach((wheel, index) => {
+      const connection =
+        this.loadedVehicle?.connections[index] ?? wheelConnections[index]!;
+      const side = connection.x < 0 ? -1 : 1;
+      wheel.rotation.order = "YXZ";
+      wheel.rotation.y = 0;
+      wheel.rotation.z = (side * fold * Math.PI) / 2;
+      wheel.position.x = connection.x * (1 - 0.18 * fold);
+      wheel.position.y =
+        connection.y -
+        (this.loadedVehicle ? defaultVehicleConfig.suspensionRestLength : 0) +
+        fold * 0.3;
+    });
+    if (fold === 0 && this.flightForm === "car") this.wheelsFolded = false;
+  }
+
+  private updateFlightCamera(deltaSeconds: number, progress: number): void {
+    const root = this.vehicleVisual.root;
+    const flourish =
+      this.flightForm === "flying"
+        ? 0
+        : Math.sin(
+            Math.min(1, this.transformElapsed / TRANSFORM_SECONDS) * Math.PI,
+          );
+    const up = new THREE.Vector3(0, 1, 0);
+    const offset = new THREE.Vector3(
+      0,
+      3.8 + 2.4 * progress,
+      8.8 + 6 * progress,
+    )
+      .applyAxisAngle(up, flourish * 0.9)
+      .multiplyScalar(1 + 0.25 * flourish)
+      .applyAxisAngle(up, this.flightState.yaw);
+    const smoothing = 1 - Math.exp(-deltaSeconds * 4);
+    this.camera.position.lerp(root.position.clone().add(offset), smoothing);
+    this.camera.lookAt(root.position.clone().add(new THREE.Vector3(0, 1.2, 0)));
+    if (this.scene.fog instanceof THREE.Fog) {
+      const altitude = Math.max(
+        0,
+        root.position.y -
+          sampleTerrainPlan(
+            this.plan.terrain,
+            root.position.x,
+            root.position.z,
+          ),
+      );
+      this.scene.fog.near = this.baseFog.near + altitude * 2;
+      this.scene.fog.far = this.baseFog.far + altitude * 4;
+    }
+  }
+
+  private flightStats(): FlightStats {
+    const position = this.chassis.translation();
+    return {
+      form: this.flightForm as FlightStats["form"],
+      altitudeMeters: Math.max(
+        0,
+        Math.round(
+          position.y -
+            sampleTerrainPlan(this.plan.terrain, position.x, position.z),
+        ),
+      ),
+      airspeedKph: Math.round(flightAirspeedKph(this.flightState)),
+      headingDegrees: headingDegrees(this.flightState.yaw),
+      grounded: this.flightGrounded,
+    };
+  }
+
   private gamepadInput(): VehicleInput | undefined {
     if (!this.inputPreferences.gamepadEnabled || !navigator.getGamepads) return;
     const gamepad = [...navigator.getGamepads()].find(
@@ -1884,6 +2253,11 @@ export class WorldEngine {
   }
 
   private stepPhysics(): void {
+    if (this.flightForm !== "car") {
+      this.stepHelicopter(FIXED_STEP);
+      this.physics.step();
+      return;
+    }
     this.currentInput = smoothVehicleInput(
       this.currentInput,
       this.targetInput(),
@@ -2402,26 +2776,35 @@ export class WorldEngine {
       rotation.z,
       rotation.w,
     );
+    const progress = this.transformProgress();
+    this.helicopterKit.update(progress, this.rotorSpeed(), deltaSeconds);
+    if (this.flightForm !== "car" || this.wheelsFolded)
+      this.foldWheels(this.helicopterKit.wheelFold(progress));
     const wheelSpin =
-      (this.vehicle.currentVehicleSpeed() * deltaSeconds) /
-      defaultVehicleConfig.wheelRadius;
-    this.vehicleVisual.wheels.forEach((wheel, index) => {
-      wheel.rotation.order = "YXZ";
-      wheel.rotation.x += wheelSpin;
-      wheel.rotation.y = this.vehicle.wheelSteering(index) ?? 0;
-      const connection = this.loadedVehicle?.connections[index];
-      if (connection)
-        wheel.position.y =
-          connection.y -
-          (this.vehicle.wheelSuspensionLength(index) ??
-            defaultVehicleConfig.suspensionRestLength);
-    });
+      this.flightForm === "car"
+        ? (this.vehicle.currentVehicleSpeed() * deltaSeconds) /
+          defaultVehicleConfig.wheelRadius
+        : 0;
+    if (this.flightForm === "car")
+      this.vehicleVisual.wheels.forEach((wheel, index) => {
+        wheel.rotation.order = "YXZ";
+        wheel.rotation.x += wheelSpin;
+        wheel.rotation.y = this.vehicle.wheelSteering(index) ?? 0;
+        const connection = this.loadedVehicle?.connections[index];
+        if (connection)
+          wheel.position.y =
+            connection.y -
+            (this.vehicle.wheelSuspensionLength(index) ??
+              defaultVehicleConfig.suspensionRestLength);
+      });
     if (this.loadedVehicle)
       this.loadedVehicle.brake.value =
         this.currentInput.brake > 0.2 || this.currentInput.handbrake ? 1 : 0;
     for (const rival of this.race?.rivals ?? [])
       this.syncRaceVehicle(rival, deltaSeconds);
-    if (this.mode === "drive") {
+    if (this.mode === "drive" && this.flightForm !== "car") {
+      this.updateFlightCamera(deltaSeconds, progress);
+    } else if (this.mode === "drive") {
       const desiredOffset = new THREE.Vector3(0, 3.8, 8.8).applyQuaternion(
         this.vehicleVisual.root.quaternion,
       );
@@ -2522,7 +2905,9 @@ export class WorldEngine {
       buildings: this.plan.buildings.length,
       features: this.plan.featureCount,
       speedKph: Math.round(
-        Math.abs(this.vehicle?.currentVehicleSpeed?.() ?? 0) * 3.6,
+        this.flightForm !== "car"
+          ? flightAirspeedKph(this.flightState)
+          : Math.abs(this.vehicle?.currentVehicleSpeed?.() ?? 0) * 3.6,
       ),
       fps: this.fps,
       chunks: this.plan.chunks.length,
@@ -2555,6 +2940,10 @@ export class WorldEngine {
       lastRebuiltChunks: this.lastRebuiltChunks,
       inputSource: this.inputSource,
       ...(this.race ? { race: this.raceStats(this.race) } : {}),
+      ...(this.flightForm !== "car" ? { flight: this.flightStats() } : {}),
+      ...(this.flightNotice && this.flightNotice.expiresAt > performance.now()
+        ? { flightNotice: this.flightNotice.text }
+        : {}),
     });
   }
 
