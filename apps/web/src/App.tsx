@@ -512,8 +512,8 @@ export function App() {
               </select>
             </label>
             <p className="provider-note">
-              Successful area downloads are cached and reused for identical
-              boundaries and data-source versions.
+              The last 5 downloaded areas are kept, so any selection that fits
+              inside one of them is built without downloading again.
             </p>
             <button
               className="primary-action"
@@ -538,9 +538,11 @@ export function App() {
                 <progress max="100" value={importJob.progress} />
                 {importJob.status === "complete" && (
                   <small>
-                    {importJob.stage.includes("cache")
-                      ? `${importJob.featureCount} geographic features reused from cache`
-                      : `${importJob.featureCount} geographic features ready`}
+                    {importJob.stage === "cached-area"
+                      ? `${importJob.featureCount} geographic features reused from an earlier download of this area`
+                      : importJob.stage.includes("cache")
+                        ? `${importJob.featureCount} geographic features reused from cache`
+                        : `${importJob.featureCount} geographic features ready`}
                   </small>
                 )}
               </div>

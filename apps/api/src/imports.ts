@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import type {
+  AreaSelection,
   Diagnostic,
   ImportJob,
   ImportRequest,
   Wgs84Bounds,
 } from "@osm3d/contracts";
+import { selectionRing } from "@osm3d/geo";
 import { normalizeOverpass } from "@osm3d/osm";
 import type { AppConfig } from "./config.js";
 import type { DatabasePool } from "./database.js";
@@ -37,6 +39,177 @@ function boundsPolygon(bounds: Wgs84Bounds): object {
   };
 }
 
+/** Downloaded areas kept available for reuse by later, overlapping selections. */
+export const REUSABLE_DOWNLOAD_AREAS = 5;
+
+type Ring = [number, number][];
+
+/** The exact area an import covers: the rotated selection, or its bounds. */
+export function importAreaRing(
+  request: Pick<ImportRequest, "bounds" | "selection">,
+): Ring {
+  if (request.selection) return selectionRing(request.selection);
+  const { west, south, east, north } = request.bounds;
+  return [
+    [west, south],
+    [east, south],
+    [east, north],
+    [west, north],
+    [west, south],
+  ];
+}
+
+function onSegment(
+  point: [number, number],
+  a: [number, number],
+  b: [number, number],
+) {
+  const [px, py] = point;
+  const [ax, ay] = a;
+  const [bx, by] = b;
+  const length = Math.hypot(bx - ax, by - ay) || 1;
+  const cross =
+    Math.abs((bx - ax) * (py - ay) - (by - ay) * (px - ax)) / length;
+  const within =
+    px >= Math.min(ax, bx) - 1e-9 &&
+    px <= Math.max(ax, bx) + 1e-9 &&
+    py >= Math.min(ay, by) - 1e-9 &&
+    py <= Math.max(ay, by) + 1e-9;
+  return cross < 1e-9 && within;
+}
+
+function ringContainsPoint(ring: Ring, point: [number, number]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i]!;
+    const b = ring[j]!;
+    if (onSegment(point, a, b)) return true;
+    if (
+      a[1] > point[1] !== b[1] > point[1] &&
+      point[0] < ((b[0] - a[0]) * (point[1] - a[1])) / (b[1] - a[1]) + a[0]
+    )
+      inside = !inside;
+  }
+  return inside;
+}
+
+/** Selection areas are convex quadrilaterals, so corner containment suffices. */
+export function areaCovers(outer: Ring, inner: Ring): boolean {
+  return inner.every((point) => ringContainsPoint(outer, point));
+}
+
+interface ReusableSnapshot {
+  id: string;
+  query: {
+    query?: string;
+    bounds: Wgs84Bounds;
+    selection?: AreaSelection;
+    elevationProvider?: string;
+    elevationDataset?: string;
+  };
+  content_hash: string;
+  cache_path: string;
+  attribution: string;
+  license_url: string;
+  elevation_snapshot: unknown | null;
+  elevation_content_hash: string | null;
+}
+
+/**
+ * Serves an import from one of the most recent downloads when that area fully
+ * contains the new one: features are trimmed to the new area exactly as the
+ * Overpass query would have selected them, and the georeferenced elevation grid
+ * is shared, so neither OpenStreetMap nor USGS is contacted again.
+ */
+async function deriveFromDownloadedArea(
+  pool: DatabasePool,
+  request: ImportRequest,
+): Promise<{ snapshotId: string; featureCount: number } | undefined> {
+  const recent = await pool.query<ReusableSnapshot>(
+    `SELECT id, query, content_hash, cache_path, attribution, license_url,
+            elevation_snapshot, elevation_content_hash
+     FROM source_snapshots
+     WHERE provider = $1 AND query_version = $2 AND NOT (query ? 'derivedFrom')
+     ORDER BY retrieved_at DESC
+     LIMIT ${REUSABLE_DOWNLOAD_AREAS}`,
+    [request.provider, request.queryVersion],
+  );
+  const area = importAreaRing(request);
+  const parent = recent?.rows.find((row) =>
+    areaCovers(importAreaRing(row.query), area),
+  );
+  if (!parent) return undefined;
+
+  const areaJson = JSON.stringify({ type: "Polygon", coordinates: [area] });
+  const contentHash = createHash("sha256")
+    .update(
+      `${parent.content_hash}:${JSON.stringify(request.bounds)}:${JSON.stringify(request.selection ?? null)}`,
+    )
+    .digest("hex");
+  const client = await pool.connect();
+  let snapshotId: string = randomUUID();
+  try {
+    await client.query("BEGIN");
+    const inserted = await client.query(
+      `INSERT INTO source_snapshots
+         (id, provider, query_version, bounds, query, retrieved_at, content_hash, cache_path, attribution, license_url,
+          elevation_snapshot, elevation_content_hash)
+       SELECT $1, provider, query_version, ST_SetSRID(ST_GeomFromGeoJSON($3), 4326), $4::jsonb,
+              retrieved_at, $5, cache_path, attribution, license_url, elevation_snapshot, elevation_content_hash
+       FROM source_snapshots WHERE id = $2
+       ON CONFLICT (provider, content_hash) DO NOTHING`,
+      [
+        snapshotId,
+        parent.id,
+        JSON.stringify(boundsPolygon(request.bounds)),
+        JSON.stringify({
+          ...(parent.query.query ? { query: parent.query.query } : {}),
+          bounds: request.bounds,
+          ...(request.selection ? { selection: request.selection } : {}),
+          ...(parent.query.elevationProvider
+            ? { elevationProvider: parent.query.elevationProvider }
+            : {}),
+          ...(parent.query.elevationDataset
+            ? { elevationDataset: parent.query.elevationDataset }
+            : {}),
+          derivedFrom: parent.id,
+        }),
+        contentHash,
+      ],
+    );
+    if (inserted.rowCount === 0) {
+      const existing = await client.query<{ id: string }>(
+        "SELECT id FROM source_snapshots WHERE provider = $1 AND content_hash = $2",
+        [request.provider, contentHash],
+      );
+      snapshotId = existing.rows[0]?.id ?? snapshotId;
+    }
+    // Overpass returns every way intersecting the query area with its full
+    // geometry, so the same intersection test reproduces a fresh download.
+    await client.query(
+      `INSERT INTO osm_features
+         (snapshot_id, source_id, source_type, feature_kind, geometry, tags, facts, warnings, geometry_hash)
+       SELECT $1, source_id, source_type, feature_kind, geometry, tags, facts, warnings, geometry_hash
+       FROM osm_features
+       WHERE snapshot_id = $2
+         AND ST_Intersects(geometry, ST_SetSRID(ST_GeomFromGeoJSON($3), 4326))
+       ON CONFLICT (snapshot_id, source_id) DO NOTHING`,
+      [snapshotId, parent.id, areaJson],
+    );
+    const counted = await client.query<{ count: number }>(
+      "SELECT COUNT(*)::integer AS count FROM osm_features WHERE snapshot_id = $1",
+      [snapshotId],
+    );
+    await client.query("COMMIT");
+    return { snapshotId, featureCount: counted.rows[0]?.count ?? 0 };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function createImportJob(
   pool: DatabasePool,
   request: ImportRequest,
@@ -60,7 +233,15 @@ export async function createImportJob(
       JSON.stringify(request.selection ?? null),
     ],
   );
-  const snapshot = cached.rows[0];
+  const snapshot =
+    cached.rows[0] ??
+    (await deriveFromDownloadedArea(pool, request).then((derived) =>
+      derived
+        ? { id: derived.snapshotId, feature_count: derived.featureCount }
+        : undefined,
+    ));
+  const reusedArea = !cached.rows[0] && Boolean(snapshot);
+  const stage = snapshot ? (reusedArea ? "cached-area" : "cached") : "queued";
   const result = snapshot
     ? {
         snapshotId: snapshot.id,
@@ -79,7 +260,7 @@ export async function createImportJob(
       JSON.stringify(request),
       snapshot ? "complete" : "queued",
       snapshot ? 100 : 0,
-      snapshot ? "cached" : "queued",
+      stage,
       result ? JSON.stringify(result) : null,
     ],
   );
@@ -87,7 +268,7 @@ export async function createImportJob(
     id,
     status: snapshot ? "complete" : "queued",
     progress: snapshot ? 100 : 0,
-    stage: snapshot ? "cached" : "queued",
+    stage,
     diagnostics: [],
     ...(snapshot
       ? { snapshotId: snapshot.id, featureCount: snapshot.feature_count }
