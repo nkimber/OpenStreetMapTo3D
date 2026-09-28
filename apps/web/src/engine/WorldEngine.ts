@@ -85,6 +85,7 @@ import {
   ROCKET_COOLDOWN_SECONDS,
   ROCKET_SPEED,
 } from "./combat.js";
+import { RaceAudio } from "./raceAudio.js";
 
 const FIXED_STEP = 1 / 60;
 const RACE_COUNTDOWN_SECONDS = 3.3;
@@ -118,6 +119,8 @@ export interface RaceStartOptions {
 }
 
 export interface RaceStats {
+  courseId: string;
+  courseTitle: string;
   phase: RacePhase;
   countdownLights: number;
   elapsedSeconds: number;
@@ -262,6 +265,8 @@ interface GridPose {
 
 interface RaceSession {
   course: RaceCourse;
+  courseId: string;
+  courseTitle: string;
   scene: RaceScene;
   phase: RacePhase;
   countdownElapsed: number;
@@ -281,6 +286,7 @@ interface RaceSession {
   previousPosition: number;
   positionChange?: { from: number; to: number; expiresAt: number };
   playerFinishTime?: number;
+  celebrationElapsed: number;
   gridPoses: GridPose[];
   rivals: RaceVehicle[];
 }
@@ -518,11 +524,14 @@ export class WorldEngine {
   private garageOpen = false;
   private raceSetupOpen = false;
   private readonly raceCourseCandidates = new Map<string, RaceCourse>();
+  private readonly raceAudio = new RaceAudio();
   private readonly spawnPosition = new THREE.Vector3();
   private readonly spawnRotation = new THREE.Quaternion();
   private readonly safePosition = new THREE.Vector3();
   private readonly safeRotation = new THREE.Quaternion();
   private race: RaceSession | undefined;
+  private previousRaceSpeedKph = 0;
+  private collisionSoundCooldown = 0;
   private definition: WorldDefinition;
   private plan: WorldPlan;
   private animationFrame = 0;
@@ -655,6 +664,10 @@ export class WorldEngine {
     this.keys.clear();
     this.currentInput = { ...neutralVehicleInput };
     if (!open && this.mode === "drive") this.renderer.domElement.focus();
+  }
+
+  prepareRaceAudio(): void {
+    this.raceAudio.unlock();
   }
 
   setRoadSignsEnabled(enabled: boolean): void {
@@ -1008,19 +1021,17 @@ export class WorldEngine {
       return "Enter Drive mode before starting a race.";
     if (this.flightForm !== "car")
       return "Land and transform back into a car before racing.";
+    this.raceAudio.unlock();
     this.cancelRace();
     const revision = ++this.raceLoadRevision;
-    const course =
-      (options.courseId
-        ? this.raceCourseCandidates.get(options.courseId)
-        : undefined) ??
-      (() => {
-        const previews = this.previewRaceCourses(options.targetLength ?? 1_000);
-        return previews[0]
-          ? this.raceCourseCandidates.get(previews[0].id)
-          : undefined;
-      })();
-    if (!course)
+    let courseId = options.courseId;
+    let course = courseId ? this.raceCourseCandidates.get(courseId) : undefined;
+    if (!course) {
+      const preview = this.previewRaceCourses(options.targetLength ?? 1_000)[0];
+      courseId = preview?.id;
+      course = courseId ? this.raceCourseCandidates.get(courseId) : undefined;
+    }
+    if (!course || !courseId)
       return `This road network cannot support the selected ${((options.targetLength ?? 1_000) / 1_000).toFixed(0)} km race.`;
 
     const rivalChoices = rivalVehicleChoices(this.vehicleChoice);
@@ -1074,6 +1085,11 @@ export class WorldEngine {
     this.currentInput = { ...neutralVehicleInput };
     this.race = {
       course,
+      courseId,
+      courseTitle:
+        course.kind === "loop"
+          ? `${course.difficulty} road circuit`
+          : `${course.difficulty} out-and-back challenge`,
       scene,
       phase: "countdown",
       countdownElapsed: 0,
@@ -1088,11 +1104,15 @@ export class WorldEngine {
       falseStart: false,
       splitTimes: [],
       previousPosition: 1,
+      celebrationElapsed: 0,
       gridPoses,
       rivals,
     };
+    this.previousRaceSpeedKph = 0;
+    this.collisionSoundCooldown = 0;
     this.raceSetupOpen = false;
-    updateRaceScene(scene, 1, 0, 0);
+    updateRaceScene(scene, "countdown", 1, 0, 0);
+    this.raceAudio.countdown(1);
     this.emitStats();
     return undefined;
   }
@@ -1110,6 +1130,7 @@ export class WorldEngine {
     this.scene.remove(race.scene.root);
     disposeRaceScene(race.scene);
     this.race = undefined;
+    this.raceAudio.stopRace();
     this.emitStats();
   }
 
@@ -1165,6 +1186,7 @@ export class WorldEngine {
 
   dispose(): void {
     this.cancelRace();
+    this.raceAudio.dispose();
     if (this.roadSigns) disposeRoadSigns(this.roadSigns);
     this.scene.remove(this.vehicleVisual.root);
     disposeVehicleModel(this.vehicleVisual.root);
@@ -2881,6 +2903,7 @@ export class WorldEngine {
 
   private advanceRace(race: RaceSession): void {
     if (race.phase === "countdown") {
+      const previousLights = race.countdownLights;
       race.countdownElapsed += FIXED_STEP;
       race.falseStart ||=
         this.keys.has("KeyW") ||
@@ -2889,6 +2912,8 @@ export class WorldEngine {
         this.keys.has("ArrowDown");
       if (race.falseStart) race.warning = "False start held until green";
       race.countdownLights = Math.min(3, Math.floor(race.countdownElapsed) + 1);
+      if (race.countdownLights > previousLights)
+        this.raceAudio.countdown(race.countdownLights);
       this.placeRigidBody(this.chassis, race.gridPoses[0]!);
       race.rivals.forEach((rival, index) =>
         this.placeRigidBody(rival.chassis, race.gridPoses[index + 1]!),
@@ -2896,6 +2921,7 @@ export class WorldEngine {
       if (race.countdownElapsed >= RACE_COUNTDOWN_SECONDS) {
         race.phase = "racing";
         race.countdownLights = 0;
+        this.raceAudio.green();
         delete race.warning;
         this.currentInput = { ...neutralVehicleInput };
         for (const rival of race.rivals)
@@ -2949,6 +2975,7 @@ export class WorldEngine {
           if (Number.isFinite(rivalSplit))
             race.lastSplitDelta = race.elapsedSeconds - rivalSplit;
           race.checkpointIndex += 1;
+          this.raceAudio.checkpoint();
         } else if (!isFinish && race.playerProgress > checkpointDistance + 28)
           race.warning = "Checkpoint missed — turn back through the arch";
       }
@@ -3026,6 +3053,8 @@ export class WorldEngine {
           expiresAt: race.elapsedSeconds + 2.2,
         };
         race.previousPosition = positionNow;
+        if (positionNow < race.positionChange.from)
+          this.raceAudio.positionGained();
       }
       if (
         race.checkpointIndex >= race.course.checkpointDistances.length &&
@@ -3034,13 +3063,19 @@ export class WorldEngine {
         race.finishPosition = this.racePosition(race);
         race.playerFinishTime = race.elapsedSeconds;
         race.phase = "finished";
+        this.raceAudio.finish();
       }
+    } else {
+      race.celebrationElapsed += FIXED_STEP;
     }
     updateRaceScene(
       race.scene,
+      race.phase,
       race.countdownLights,
       race.playerProgress,
       race.checkpointIndex,
+      race.wrongWaySeconds > 0.8,
+      race.celebrationElapsed,
     );
   }
 
@@ -3168,20 +3203,68 @@ export class WorldEngine {
         this.currentInput.brake > 0.2 || this.currentInput.handbrake ? 1 : 0;
     for (const rival of this.race?.rivals ?? [])
       this.syncRaceVehicle(rival, deltaSeconds);
+    const speedKph = Math.abs(this.vehicle.currentVehicleSpeed()) * 3.6;
+    if (this.race) {
+      this.collisionSoundCooldown = Math.max(
+        0,
+        this.collisionSoundCooldown - deltaSeconds,
+      );
+      if (
+        this.race.phase === "racing" &&
+        this.previousRaceSpeedKph > 18 &&
+        this.previousRaceSpeedKph - speedKph > 10 &&
+        this.collisionSoundCooldown === 0
+      ) {
+        this.raceAudio.collision();
+        this.collisionSoundCooldown = 0.45;
+      }
+      this.raceAudio.update(
+        speedKph,
+        this.currentInput.throttle,
+        this.currentInput.steering,
+        this.currentInput.brake > 0.35 || this.currentInput.handbrake,
+      );
+      this.previousRaceSpeedKph = speedKph;
+    }
     if (this.mode === "drive" && this.flightForm !== "car") {
       this.updateFlightCamera(deltaSeconds, progress);
     } else if (this.mode === "drive") {
-      const desiredOffset = new THREE.Vector3(0, 3.8, 8.8).applyQuaternion(
-        this.vehicleVisual.root.quaternion,
-      );
+      const nearbyRival =
+        this.race?.rivals.some((rival) => {
+          const rivalPosition = rival.chassis.translation();
+          return (
+            Math.hypot(
+              rivalPosition.x - position.x,
+              rivalPosition.z - position.z,
+            ) < 14
+          );
+        }) ?? false;
+      const finished = this.race?.phase === "finished";
+      const cameraDistance = finished ? 12.4 : nearbyRival ? 10.7 : 8.8;
+      const cameraHeight = finished ? 5.2 : nearbyRival ? 4.5 : 3.8;
+      const desiredOffset = new THREE.Vector3(
+        finished ? Math.sin(this.race!.celebrationElapsed * 0.42) * 5 : 0,
+        cameraHeight,
+        cameraDistance,
+      ).applyQuaternion(this.vehicleVisual.root.quaternion);
       const desiredPosition = this.vehicleVisual.root.position
         .clone()
         .add(desiredOffset);
       const smoothing = 1 - Math.exp(-deltaSeconds * 6);
       this.camera.position.lerp(desiredPosition, smoothing);
+      const targetFov = finished ? 66 : nearbyRival ? 62 : 55;
+      const nextFov = THREE.MathUtils.lerp(
+        this.camera.fov,
+        targetFov,
+        1 - Math.exp(-deltaSeconds * 4),
+      );
+      if (Math.abs(nextFov - this.camera.fov) > 0.01) {
+        this.camera.fov = nextFov;
+        this.camera.updateProjectionMatrix();
+      }
       const lookAt = this.vehicleVisual.root.position
         .clone()
-        .add(new THREE.Vector3(0, 1, 0));
+        .add(new THREE.Vector3(0, finished ? 1.8 : 1, 0));
       this.camera.lookAt(lookAt);
     }
   }
@@ -3234,6 +3317,8 @@ export class WorldEngine {
         ? { from: race.positionChange.from, to: race.positionChange.to }
         : undefined;
     return {
+      courseId: race.courseId,
+      courseTitle: race.courseTitle,
       phase: race.phase,
       countdownLights: race.countdownLights,
       elapsedSeconds: race.elapsedSeconds,

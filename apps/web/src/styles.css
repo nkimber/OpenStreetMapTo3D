@@ -1173,6 +1173,102 @@ button:disabled {
   border-color: rgba(255, 208, 64, 0.6);
   background: rgba(52, 39, 8, 0.86);
 }
+.race-results {
+  position: absolute;
+  z-index: 9;
+  top: 50%;
+  left: 50%;
+  width: min(470px, calc(100vw - 32px));
+  padding: 22px;
+  transform: translate(-50%, -50%);
+  border-color: rgba(255, 208, 64, 0.58);
+  background: rgba(16, 22, 20, 0.94);
+  box-shadow:
+    0 28px 80px rgba(0, 0, 0, 0.58),
+    inset 0 3px 0 rgba(255, 211, 74, 0.52);
+}
+.race-results header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.race-results header small,
+.race-results header p {
+  color: #a9bbb0;
+}
+.race-results h2 {
+  margin: 2px 0;
+  color: #fff2bf;
+  font-size: 31px;
+}
+.race-results header p {
+  margin: 0;
+  font-size: 12px;
+}
+.race-personal-best {
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: #352900;
+  background: #ffd24f;
+  text-transform: uppercase;
+}
+.race-result-list {
+  display: grid;
+  gap: 6px;
+  margin: 18px 0;
+  padding: 0;
+  list-style: none;
+}
+.race-result-list li {
+  display: grid;
+  grid-template-columns: 28px 10px 1fr auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  color: #cad7cf;
+  background: rgba(255, 255, 255, 0.055);
+}
+.race-result-list li.player {
+  color: white;
+  background: rgba(114, 239, 208, 0.16);
+  box-shadow: inset 3px 0 #72efd0;
+}
+.race-result-list time {
+  color: #ffd071;
+  font-variant-numeric: tabular-nums;
+}
+.race-result-color {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
+}
+.race-result-summary {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  color: #9eb1a5;
+  font-size: 11px;
+}
+.race-result-summary span {
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.2);
+}
+.race-results footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.race-results footer button:first-child {
+  border-color: #72efd0;
+  color: #15382e;
+  background: #8cf2d5;
+  font-weight: 800;
+}
 .control-settings {
   margin-top: 5px;
   padding-top: 7px;

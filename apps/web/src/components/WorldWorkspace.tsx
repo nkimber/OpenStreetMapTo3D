@@ -81,6 +81,14 @@ function formatRaceTime(seconds: number): string {
   return `${minutes}:${remainder.toFixed(1).padStart(4, "0")}`;
 }
 
+function fastestRaceSplit(splitTimes: number[]): number | undefined {
+  if (splitTimes.length === 0) return undefined;
+  return splitTimes.reduce(
+    (best, time, index) => Math.min(best, time - (splitTimes[index - 1] ?? 0)),
+    Number.POSITIVE_INFINITY,
+  );
+}
+
 function replaceOverride(
   current: WorldOverride[],
   override: WorldOverride,
@@ -197,6 +205,9 @@ export function WorldWorkspace({
   const [raceCandidates, setRaceCandidates] = useState<RaceCoursePreview[]>([]);
   const [selectedRaceCourseId, setSelectedRaceCourseId] = useState<string>();
   const [raceVariation, setRaceVariation] = useState(0);
+  const [raceBestSeconds, setRaceBestSeconds] = useState<number>();
+  const [raceIsPersonalBest, setRaceIsPersonalBest] = useState(false);
+  const recordedFinishRef = useRef<string | undefined>(undefined);
   const hasRoads = definition.features.some(
     (feature) => feature.kind === "road",
   );
@@ -349,6 +360,35 @@ export function WorldWorkspace({
   ]);
 
   useEffect(() => {
+    const race = stats.race;
+    if (race?.phase !== "finished") return;
+    const player = race.results?.find((result) => result.player);
+    if (player?.timeSeconds === undefined) return;
+    const finishKey = `${race.courseId}:${player.timeSeconds.toFixed(3)}`;
+    if (recordedFinishRef.current === finishKey) return;
+    recordedFinishRef.current = finishKey;
+    const storageKey = `streetrove.raceBest.${race.courseId}`;
+    let previous: number | undefined;
+    try {
+      const stored = Number(localStorage.getItem(storageKey));
+      if (Number.isFinite(stored) && stored > 0) previous = stored;
+    } catch {
+      // Results remain available when private storage is unavailable.
+    }
+    const personalBest =
+      previous === undefined || player.timeSeconds < previous;
+    const best = personalBest ? player.timeSeconds : previous;
+    setRaceBestSeconds(best);
+    setRaceIsPersonalBest(personalBest);
+    if (personalBest)
+      try {
+        localStorage.setItem(storageKey, String(player.timeSeconds));
+      } catch {
+        // Keep the in-session result even if persistence is blocked.
+      }
+  }, [stats.race]);
+
+  useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     let cancelled = false;
@@ -498,6 +538,10 @@ export function WorldWorkspace({
   const beginRace = async () => {
     const engine = engineRef.current;
     if (!engine || !selectedRaceCourseId) return;
+    engine.prepareRaceAudio();
+    recordedFinishRef.current = undefined;
+    setRaceBestSeconds(undefined);
+    setRaceIsPersonalBest(false);
     setRacePreparing(true);
     setRaceError(undefined);
     try {
@@ -521,6 +565,10 @@ export function WorldWorkspace({
     } finally {
       setRacePreparing(false);
     }
+  };
+  const chooseAnotherRace = () => {
+    engineRef.current?.cancelRace();
+    openRaceSetup();
   };
 
   useEffect(() => {
@@ -1096,7 +1144,7 @@ export function WorldWorkspace({
               </footer>
             </section>
           )}
-          {stats.race && (
+          {stats.race && stats.race.phase !== "finished" && (
             <section
               className={`race-hud glass-panel ${stats.race.phase}`}
               aria-live="polite"
@@ -1120,11 +1168,7 @@ export function WorldWorkspace({
                 </>
               ) : (
                 <>
-                  <strong>
-                    {stats.race.phase === "finished"
-                      ? `Finished ${ordinal(stats.race.position)}`
-                      : `${ordinal(stats.race.position)} of 4`}
-                  </strong>
+                  <strong>{ordinal(stats.race.position)} of 4</strong>
                   {stats.race.positionChange && (
                     <span className="race-position-change">
                       {stats.race.positionChange.to <
@@ -1173,6 +1217,75 @@ export function WorldWorkspace({
               {stats.race.warning && (
                 <strong className="race-warning">{stats.race.warning}</strong>
               )}
+            </section>
+          )}
+          {stats.race?.phase === "finished" && (
+            <section
+              className="race-results glass-panel"
+              aria-label="Race results"
+              aria-live="polite"
+            >
+              <header>
+                <div>
+                  <small>Race complete</small>
+                  <h2>{ordinal(stats.race.position)} place</h2>
+                  <p>{stats.race.courseTitle}</p>
+                </div>
+                {raceIsPersonalBest && (
+                  <strong className="race-personal-best">New best</strong>
+                )}
+              </header>
+              <ol className="race-result-list">
+                {stats.race.results?.map((result) => (
+                  <li
+                    className={result.player ? "player" : ""}
+                    key={result.name}
+                  >
+                    <strong>{result.position}</strong>
+                    <span
+                      className="race-result-color"
+                      style={{ backgroundColor: result.color }}
+                    />
+                    <span>{result.name}</span>
+                    <time>
+                      {result.timeSeconds === undefined
+                        ? "Still racing"
+                        : formatRaceTime(result.timeSeconds)}
+                    </time>
+                  </li>
+                ))}
+              </ol>
+              <div className="race-result-summary">
+                <span>
+                  Time{" "}
+                  <strong>{formatRaceTime(stats.race.elapsedSeconds)}</strong>
+                </span>
+                {fastestRaceSplit(stats.race.splitTimes) !== undefined && (
+                  <span>
+                    Best split{" "}
+                    <strong>
+                      {formatRaceTime(fastestRaceSplit(stats.race.splitTimes)!)}
+                    </strong>
+                  </span>
+                )}
+                {raceBestSeconds !== undefined && (
+                  <span>
+                    Course best{" "}
+                    <strong>{formatRaceTime(raceBestSeconds)}</strong>
+                  </span>
+                )}
+              </div>
+              <footer>
+                <button type="button" onClick={() => void beginRace()}>
+                  Race again
+                </button>
+                <button type="button" onClick={chooseAnotherRace}>
+                  Choose new course
+                </button>
+                <button type="button" onClick={toggleRace}>
+                  Exit race
+                </button>
+              </footer>
             </section>
           )}
           {stats.flightNotice && (

@@ -76,6 +76,11 @@ Implemented capabilities:
   splits, lap tracking and deterministic standings
 - Distinct sedan, sport-hatchback and SUV acceleration, speed, steering,
   braking and suspension profiles
+- Countdown, engine, tire-slip, impact, checkpoint, position and finish audio
+  synthesized with the browser audio API
+- Traffic-aware chase-camera framing, red wrong-way arrows, animated finish flags,
+  full standings, split summary, per-course local best times, replay and
+  course-selection actions
 - More forgiving cornering from longer, firmer-damped suspension, a modestly
   lowered mass center and speed-sensitive steering, without forced-upright
   stabilization

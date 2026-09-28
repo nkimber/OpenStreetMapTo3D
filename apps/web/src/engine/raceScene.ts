@@ -11,7 +11,8 @@ export interface RaceScene {
   root: THREE.Group;
   lightMaterials: THREE.MeshStandardMaterial[];
   gates: RaceGate[];
-  arrows: Array<{ distance: number; root: THREE.Object3D }>;
+  arrows: Array<{ distance: number; root: THREE.ArrowHelper }>;
+  finishCelebration: THREE.Group;
 }
 
 export interface RaceSceneOptions {
@@ -146,6 +147,45 @@ function addStartGrid(root: THREE.Group, course: RaceCourse): void {
   root.add(floor);
 }
 
+function addFinishCelebration(
+  root: THREE.Group,
+  course: RaceCourse,
+): THREE.Group {
+  const start = course.points[0]!;
+  const celebration = new THREE.Group();
+  celebration.name = "finish-celebration";
+  celebration.position.set(start.x, start.y + 0.12, start.z);
+  celebration.rotation.y = routeYaw(course, 0);
+  for (const side of [-1, 1]) {
+    const flag = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.2, 1.5, 8, 5),
+      new THREE.MeshStandardMaterial({
+        map: checkerTexture(),
+        side: THREE.DoubleSide,
+        roughness: 0.72,
+      }),
+    );
+    flag.name = `finish-flag-${side}`;
+    flag.position.set(side * 3.8, 3.25, 0);
+    flag.rotation.y = side * -0.32;
+    celebration.add(flag);
+  }
+  const glow = new THREE.Mesh(
+    new THREE.TorusGeometry(3.1, 0.1, 10, 42),
+    new THREE.MeshStandardMaterial({
+      color: 0xffcf45,
+      emissive: 0xff8a00,
+      emissiveIntensity: 2.2,
+    }),
+  );
+  glow.name = "finish-glow";
+  glow.position.y = 2.65;
+  celebration.add(glow);
+  celebration.visible = false;
+  root.add(celebration);
+  return celebration;
+}
+
 function addGate(
   root: THREE.Group,
   course: RaceCourse,
@@ -207,6 +247,7 @@ export function createRaceScene(
   root.name = "race-scene";
   addStartGrid(root, course);
   const lightMaterials = addGantry(root, course);
+  const finishCelebration = addFinishCelebration(root, course);
   if (options.roadClosures ?? true) addRoadClosures(root, course);
   const gates = course.checkpointDistances
     .slice(0, -1)
@@ -225,19 +266,23 @@ export function createRaceScene(
     root.add(arrow);
     return { distance, root: arrow };
   });
-  return { root, lightMaterials, gates, arrows };
+  return { root, lightMaterials, gates, arrows, finishCelebration };
 }
 
 export function updateRaceScene(
   scene: RaceScene,
+  phase: "countdown" | "racing" | "finished",
   lights: number,
   progress: number,
   checkpointIndex: number,
+  wrongWay = false,
+  celebrationElapsed = 0,
 ): void {
   scene.lightMaterials.forEach((material, index) => {
-    const active = index < lights;
-    material.color.setHex(active ? 0xff2929 : 0x401010);
-    material.emissive.setHex(active ? 0xff0505 : 0x160000);
+    const green = phase !== "countdown";
+    const active = green || index < lights;
+    material.color.setHex(green ? 0x36e36b : active ? 0xff2929 : 0x401010);
+    material.emissive.setHex(green ? 0x0c9a3d : active ? 0xff0505 : 0x160000);
     material.emissiveIntensity = active ? 2.8 : 0.25;
   });
   scene.gates.forEach((gate, index) => {
@@ -246,7 +291,23 @@ export function updateRaceScene(
   scene.arrows.forEach((arrow) => {
     arrow.root.visible =
       arrow.distance > progress - 12 && arrow.distance < progress + 150;
+    arrow.root.setColor(wrongWay ? 0xff3b30 : 0xffc928);
   });
+  scene.finishCelebration.visible = phase === "finished";
+  if (scene.finishCelebration.visible) {
+    scene.finishCelebration.rotation.z =
+      Math.sin(celebrationElapsed * 3.5) * 0.035;
+    const glow = scene.finishCelebration.getObjectByName("finish-glow");
+    if (glow) glow.rotation.z = celebrationElapsed * 1.5;
+    for (const side of [-1, 1]) {
+      const flag = scene.finishCelebration.getObjectByName(
+        `finish-flag-${side}`,
+      );
+      if (flag)
+        flag.rotation.z =
+          side * (0.08 + Math.sin(celebrationElapsed * 5 + side) * 0.09);
+    }
+  }
 }
 
 export function disposeRaceScene(scene: RaceScene): void {

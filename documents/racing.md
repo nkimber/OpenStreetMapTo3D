@@ -23,3 +23,9 @@ The sedan is the balanced baseline. The sport hatchback accelerates and steers m
 ## Race rules
 
 The start grid physically holds every car through the countdown and reports an attempted false start. Route direction and separation are checked continuously: sustained reverse travel shows a wrong-way warning, missed arches must be driven through, and a player who stays well off course for four seconds is returned to the last completed checkpoint. Checkpoint split times compare against rivals that have already crossed, multi-lap progress is explicit, position changes are announced, and finish order is deterministic from recorded finish times and remaining route progress.
+
+## Race feedback and results
+
+The route arrows turn red while the player is travelling the wrong way. The chase camera eases wider when another racer is close and moves into a wider orbit after the finish. Web Audio cues cover each countdown light, the green signal, engine pitch, tire slip, heavy impacts, checkpoint crossings, a gained position, and the finish fanfare; the audio context is activated from the Start race gesture so browser autoplay rules are respected.
+
+Crossing the final arch reveals animated checkered flags and a results board with all four racers, recorded finish times, the fastest checkpoint split, and a locally saved best time for that generated course. From the board the player can immediately race again, return to the course director, or exit racing.
