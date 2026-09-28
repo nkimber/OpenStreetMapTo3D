@@ -23,6 +23,7 @@ import {
 } from "../driveEnhancement.js";
 import { DriveMiniMap } from "./DriveMiniMap.js";
 import { FlightHud } from "./FlightHud.js";
+import { DefenseHud } from "./DefenseHud.js";
 import { Garage } from "./Garage.js";
 import { BuildingEditor } from "./BuildingEditor.js";
 import { BuildingEnhancementPanel } from "./BuildingEnhancementPanel.js";
@@ -176,6 +177,10 @@ export function WorldWorkspace({
   const [stats, setStats] = useState(emptyStats);
   const flight = mode === "drive" ? stats.flight : undefined;
   const flying = Boolean(flight);
+  // The hidden mini map stays where the car took off instead of chasing the
+  // helicopter and loading tiles nobody can see.
+  const miniMapPoseRef = useRef(stats.vehicleMapPose);
+  if (!flying) miniMapPoseRef.current = stats.vehicleMapPose;
   // Aerial enhancement is tuned for driving speed, so it pauses while flying.
   automaticEnhancementActiveRef.current =
     automaticEnhancementEnabled && mode === "drive" && !flying;
@@ -942,6 +947,19 @@ export function WorldWorkspace({
               >
                 {flying ? "Land & drive" : "Fly"} (T)
               </button>
+              {!stats.race && (flying || stats.defense) && (
+                <button
+                  className={stats.defense ? "race-cancel" : "defense-start"}
+                  onClick={(event) => {
+                    event.currentTarget.blur();
+                    if (stats.defense) engineRef.current?.endDefense();
+                    else engineRef.current?.startDefense();
+                  }}
+                  title="Giant robots march on the house in the middle of the map"
+                >
+                  {stats.defense ? "End attack" : "Defend the neighbourhood"}
+                </button>
+              )}
               <button
                 aria-pressed={automaticEnhancementEnabled}
                 className={automaticEnhancementEnabled ? "active" : ""}
@@ -954,7 +972,7 @@ export function WorldWorkspace({
               </button>
               <button
                 className={stats.race ? "race-cancel" : "race-start"}
-                disabled={racePreparing}
+                disabled={racePreparing || Boolean(stats.defense)}
                 onClick={toggleRace}
               >
                 {racePreparing
@@ -1288,20 +1306,30 @@ export function WorldWorkspace({
               </footer>
             </section>
           )}
+          {stats.defense && (
+            <DefenseHud
+              defense={stats.defense}
+              onRestart={() => engineRef.current?.startDefense()}
+              onClose={() => engineRef.current?.endDefense()}
+            />
+          )}
           {stats.flightNotice && (
             <strong className="flight-notice" role="status">
               {stats.flightNotice}
             </strong>
           )}
-          {flight ? (
+          {flight && (
             <FlightHud
               flight={flight}
               destroyedBuildings={stats.destroyedBuildings}
             />
-          ) : (
+          )}
+          {/* Hidden rather than unmounted while flying: recreating the map
+              rebuilds its WebGL context and tiles, which stalls on landing. */}
+          <div hidden={flying}>
             <DriveMiniMap
               features={definition.features}
-              pose={stats.vehicleMapPose}
+              pose={miniMapPoseRef.current}
               {...(stats.race ? { race: stats.race } : {})}
               {...(raceSetupOpen && selectedRaceCandidate
                 ? {
@@ -1309,7 +1337,7 @@ export function WorldWorkspace({
                   }
                 : {})}
             />
-          )}
+          </div>
         </>
       ) : mode === "edit" && engineReady && engineRef.current ? (
         <BuildingEditor

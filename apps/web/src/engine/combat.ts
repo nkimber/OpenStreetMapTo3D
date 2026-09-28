@@ -40,7 +40,6 @@ interface Debris {
 }
 
 interface Flash {
-  light: THREE.PointLight;
   age: number;
   life: number;
   intensity: number;
@@ -129,7 +128,13 @@ export class CombatEffects {
   readonly rockets: Rocket[] = [];
   private readonly puffs: Puff[] = [];
   private readonly debris: Debris[] = [];
-  private readonly flashes: Flash[] = [];
+  /**
+   * One permanent light is reused for every blast. Adding and removing lights
+   * changes the scene's light count, which makes three.js recompile every
+   * material's shader and stalls the frame.
+   */
+  private readonly flashLight = new THREE.PointLight(0xff9a3c, 0, 60, 2);
+  private flash: Flash | undefined;
   private readonly unitBox = new THREE.BoxGeometry(1, 1, 1);
   private readonly puffGeometry = new THREE.IcosahedronGeometry(1, 1);
   private readonly rocketBody: THREE.CylinderGeometry;
@@ -154,11 +159,76 @@ export class CombatEffects {
     this.rocketFlame = new THREE.ConeGeometry(0.12, 0.7, 8);
     this.rocketFlame.rotateX(Math.PI / 2);
     this.rocketFlame.translate(0, 0, 0.9);
+    this.scene.add(this.flashLight);
+  }
+
+  /** One of each effect mesh, so their shaders can be compiled up front. */
+  prewarmObjects(): THREE.Group {
+    const group = new THREE.Group();
+    group.add(new THREE.Mesh(this.rocketBody, this.rocketMaterial));
+    group.add(new THREE.Mesh(this.rocketFlame, this.flameMaterial));
+    group.add(new THREE.Mesh(this.unitBox, this.debrisMaterial("#c9c2b5")));
+    group.add(
+      new THREE.Mesh(
+        this.puffGeometry,
+        new THREE.MeshBasicMaterial({
+          transparent: true,
+          opacity: 0.5,
+          depthWrite: false,
+        }),
+      ),
+    );
+    return group;
   }
 
   /** Camera shake amplitude in metres; decays over time. */
   get shake(): number {
     return this.shakeAmount;
+  }
+
+  /** Adds camera shake, e.g. from a giant footstep. */
+  addShake(amount: number): void {
+    this.shakeAmount = Math.min(1.6, this.shakeAmount + amount);
+  }
+
+  /** A low, spreading dust cloud where something heavy hits the ground. */
+  dust(point: THREE.Vector3, size = 1): void {
+    const count = Math.round(4 + size * 4);
+    for (let index = 0; index < count; index += 1) {
+      const angle = (index / count) * Math.PI * 2 + Math.random() * 0.5;
+      this.puff(
+        point.clone().add(new THREE.Vector3(0, 0.5 * size, 0)),
+        new THREE.Vector3(
+          Math.cos(angle) * (3 + Math.random() * 3) * size,
+          0.6 + Math.random(),
+          Math.sin(angle) * (3 + Math.random() * 3) * size,
+        ),
+        0.8 * size,
+        (2.5 + Math.random() * 1.5) * size,
+        1.6 + Math.random(),
+        0.55,
+        0x9c8f7c,
+      );
+    }
+  }
+
+  /** Bright metal sparks and a small flash for a hit on armour. */
+  sparks(point: THREE.Vector3): void {
+    for (let index = 0; index < 10; index += 1)
+      this.puff(
+        point,
+        new THREE.Vector3(
+          (Math.random() - 0.5) * 22,
+          Math.random() * 14,
+          (Math.random() - 0.5) * 22,
+        ),
+        0.18,
+        0.05,
+        0.35 + Math.random() * 0.2,
+        1,
+        index % 2 ? 0xfff2b0 : 0xffb347,
+      );
+    this.explode(point, 0.6);
   }
 
   launch(
@@ -219,10 +289,16 @@ export class CombatEffects {
 
   /** Fireball, flash and lingering smoke. `size` ~1 for a rocket, ~3+ for a building. */
   explode(point: THREE.Vector3, size = 1, cameraDistance = 0): void {
-    const light = new THREE.PointLight(0xff9a3c, 0, 40 * size, 2);
-    light.position.copy(point);
-    this.scene.add(light);
-    this.flashes.push({ light, age: 0, life: 0.5, intensity: 90 * size });
+    const remaining = this.flash
+      ? this.flash.intensity * Math.max(0, 1 - this.flash.age / this.flash.life)
+      : 0;
+    this.flashLight.position.copy(point);
+    this.flashLight.distance = 40 * size;
+    this.flash = {
+      age: 0,
+      life: 0.5,
+      intensity: Math.max(remaining, 90 * size),
+    };
     const fireballs = Math.round(5 + size * 5);
     for (let index = 0; index < fireballs; index += 1) {
       const direction = new THREE.Vector3(
@@ -351,15 +427,14 @@ export class CombatEffects {
       this.pending.splice(index, 1);
       this.explode(blast.point, blast.size);
     }
-    for (let index = this.flashes.length - 1; index >= 0; index -= 1) {
-      const flash = this.flashes[index]!;
-      flash.age += dt;
-      const t = flash.age / flash.life;
-      flash.light.intensity = flash.intensity * Math.max(0, 1 - t) ** 2;
+    if (this.flash) {
+      this.flash.age += dt;
+      const t = this.flash.age / this.flash.life;
+      this.flashLight.intensity =
+        this.flash.intensity * Math.max(0, 1 - t) ** 2;
       if (t >= 1) {
-        this.scene.remove(flash.light);
-        flash.light.dispose();
-        this.flashes.splice(index, 1);
+        this.flashLight.intensity = 0;
+        this.flash = undefined;
       }
     }
     for (let index = this.puffs.length - 1; index >= 0; index -= 1) {
@@ -418,11 +493,8 @@ export class CombatEffects {
     for (const rocket of [...this.rockets]) this.removeRocket(rocket);
     while (this.puffs.length) this.removePuff(this.puffs.length - 1);
     while (this.debris.length) this.removeDebris(this.debris.length - 1);
-    for (const flash of this.flashes) {
-      this.scene.remove(flash.light);
-      flash.light.dispose();
-    }
-    this.flashes.length = 0;
+    this.scene.remove(this.flashLight);
+    this.flashLight.dispose();
     this.unitBox.dispose();
     this.puffGeometry.dispose();
     this.rocketBody.dispose();

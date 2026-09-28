@@ -1842,3 +1842,176 @@ button:disabled {
   padding: 0 4px;
   font-family: inherit;
 }
+
+.drive-help button.defense-start {
+  color: #fff;
+  background: linear-gradient(135deg, #b3261e, #5b0f0b);
+}
+.defense-hud {
+  position: absolute;
+  z-index: 7;
+  top: 91px;
+  right: 18px;
+  display: grid;
+  gap: 8px;
+  width: min(280px, calc(100vw - 36px));
+  padding: 13px 15px;
+}
+.defense-hud header {
+  display: grid;
+  gap: 2px;
+}
+.defense-hud header strong {
+  font-size: 16px;
+}
+.defense-hud header span,
+.defense-hud small {
+  color: #c7d4cc;
+  font-size: 11px;
+}
+.defense-meter {
+  display: grid;
+  grid-template-columns: 76px 1fr 30px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.defense-meter div {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.defense-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 200ms ease;
+}
+.defense-meter.house i {
+  background: #7fe7ff;
+}
+.defense-meter.helicopter i {
+  background: #8ee6b4;
+}
+.defense-meter.robot i {
+  background: #ff5a3a;
+}
+.defense-meter strong {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.defense-robots {
+  display: grid;
+  gap: 5px;
+  margin: 2px 0 0;
+  padding: 7px 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  list-style: none;
+}
+.defense-result {
+  position: absolute;
+  z-index: 9;
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100vw - 32px));
+  padding: 22px;
+  transform: translate(-50%, -50%);
+  background: rgba(16, 22, 20, 0.94);
+}
+.defense-result.won {
+  border-color: rgba(127, 231, 255, 0.6);
+}
+.defense-result.lost {
+  border-color: rgba(255, 90, 58, 0.6);
+}
+.defense-result small {
+  color: #a9bbb0;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.defense-result h2 {
+  margin: 4px 0 14px;
+  font-size: 24px;
+}
+.defense-result dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0;
+}
+.defense-result dl div {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.defense-result dt {
+  color: #9eb1a5;
+  font-size: 11px;
+}
+.defense-result dd {
+  margin: 2px 0 0;
+  font-size: 18px;
+  font-weight: 800;
+}
+.defense-result footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.defense-result button {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: #eaf2ec;
+  background: rgba(255, 255, 255, 0.07);
+  cursor: pointer;
+}
+.defense-result button:first-child {
+  border-color: #72efd0;
+  color: #15382e;
+  background: #8cf2d5;
+  font-weight: 800;
+}
+.defense-overlay {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.defense-arrow {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+.defense-arrow::before {
+  content: "";
+  position: absolute;
+  top: -11px;
+  left: -11px;
+  width: 0;
+  height: 0;
+  border-top: 11px solid transparent;
+  border-bottom: 11px solid transparent;
+  border-left: 22px solid #ff3a1a;
+  filter: drop-shadow(0 0 6px rgba(255, 58, 26, 0.8));
+  transform: rotate(var(--angle, 0rad));
+}
+.defense-arrow.house::before {
+  border-left-color: #7fe7ff;
+  filter: drop-shadow(0 0 6px rgba(127, 231, 255, 0.8));
+}
+.defense-arrow::after {
+  content: attr(data-label);
+  position: absolute;
+  top: 14px;
+  left: -40px;
+  width: 80px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+  text-shadow: 0 1px 3px #000;
+}

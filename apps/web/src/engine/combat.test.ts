@@ -39,6 +39,20 @@ describe("building destruction", () => {
     expect(cells.some((cell) => cell.top)).toBe(true);
   });
 
+  it("never changes the scene's light count, which would recompile shaders", () => {
+    const scene = new THREE.Scene();
+    const effects = new CombatEffects(scene, () => 0);
+    const lights = () =>
+      scene.children.filter((object) => object instanceof THREE.Light).length;
+    const before = lights();
+    effects.explode(new THREE.Vector3(), 2);
+    effects.explode(new THREE.Vector3(5, 0, 0), 1);
+    expect(lights()).toBe(before);
+    for (let t = 0; t < 2; t += 0.1) effects.update(0.1);
+    expect(lights()).toBe(before);
+    effects.dispose();
+  });
+
   it("scatters debris that settles on the ground and is cleaned up", () => {
     const scene = new THREE.Scene();
     const effects = new CombatEffects(scene, () => 0);
@@ -52,6 +66,7 @@ describe("building destruction", () => {
     expect(scene.children.length).toBeGreaterThan(before + 10);
     expect(effects.shake).toBeGreaterThan(0);
     for (let t = 0; t < 12; t += 0.05) effects.update(0.05);
+    // Only the reusable flash light remains once the effects have finished.
     expect(scene.children.length).toBe(before);
     effects.dispose();
   });

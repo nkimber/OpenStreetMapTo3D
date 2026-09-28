@@ -85,6 +85,7 @@ import {
   ROCKET_COOLDOWN_SECONDS,
   ROCKET_SPEED,
 } from "./combat.js";
+import { DefenseSession, type DefenseStats } from "./defense.js";
 import { RaceAudio } from "./raceAudio.js";
 
 const FIXED_STEP = 1 / 60;
@@ -180,6 +181,7 @@ export interface EngineStats {
   flight?: FlightStats;
   flightNotice?: string;
   destroyedBuildings: number;
+  defense?: DefenseStats;
 }
 
 export interface FlightStats {
@@ -572,6 +574,9 @@ export class WorldEngine {
   private rocketsFired = 0;
   private readonly shakeOffset = new THREE.Vector3();
   private readonly destroyedBuildings = new Set<string>();
+  private defense: DefenseSession | undefined;
+  private viewWidth = 1;
+  private viewHeight = 1;
   /** Fixed building body handle → building source id, for rocket hits. */
   private readonly buildingBodies = new Map<number, string>();
 
@@ -631,6 +636,7 @@ export class WorldEngine {
     this.aimReticle.renderOrder = 30;
     this.aimReticle.visible = false;
     this.scene.add(this.aimReticle);
+    this.prewarmEffectShaders();
     this.frameOverview();
 
     window.addEventListener("resize", this.resize);
@@ -729,6 +735,7 @@ export class WorldEngine {
 
   setMode(mode: EngineMode): void {
     const previousMode = this.mode;
+    if (mode !== "drive") this.endDefense();
     if (mode !== "drive" && this.flightForm !== "car") this.revertToCar(true);
     if (mode !== "drive") this.cancelRace();
     if (mode !== "drive") this.raceSetupOpen = false;
@@ -1021,6 +1028,7 @@ export class WorldEngine {
       return "Enter Drive mode before starting a race.";
     if (this.flightForm !== "car")
       return "Land and transform back into a car before racing.";
+    if (this.defense) return "End the robot attack before racing.";
     this.raceAudio.unlock();
     this.cancelRace();
     const revision = ++this.raceLoadRevision;
@@ -1190,6 +1198,7 @@ export class WorldEngine {
     if (this.roadSigns) disposeRoadSigns(this.roadSigns);
     this.scene.remove(this.vehicleVisual.root);
     disposeVehicleModel(this.vehicleVisual.root);
+    this.endDefense();
     this.combat.dispose();
     disposeObject(this.aimReticle);
     this.disposed = true;
@@ -1802,6 +1811,8 @@ export class WorldEngine {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
+    this.viewWidth = width;
+    this.viewHeight = height;
   };
 
   private readonly keyDown = (event: KeyboardEvent): void => {
@@ -1940,6 +1951,93 @@ export class WorldEngine {
     if (this.renderer.domElement.hasPointerCapture(event.pointerId))
       this.renderer.domElement.releasePointerCapture(event.pointerId);
   };
+
+  /**
+   * Compiles the helicopter, rocket, smoke and debris shaders while the world
+   * loads, so the first transform, shot or explosion does not stall a frame.
+   */
+  private prewarmEffectShaders(): void {
+    const samples = this.combat.prewarmObjects();
+    this.scene.add(samples);
+    this.helicopterKit.update(1, 0, 0);
+    this.aimReticle.visible = true;
+    this.renderer.compile(this.scene, this.camera);
+    this.helicopterKit.update(0, 0, 0);
+    this.aimReticle.visible = false;
+    this.scene.remove(samples);
+    samples.traverse((object) => {
+      if (
+        object instanceof THREE.Mesh &&
+        object.material instanceof THREE.MeshBasicMaterial &&
+        object.material.transparent
+      )
+        object.material.dispose();
+    });
+  }
+
+  /** Starts a robot attack on the house nearest the middle of the map. */
+  startDefense(): string | undefined {
+    if (this.mode !== "drive") return "Enter Drive mode first.";
+    if (this.race || this.raceSetupOpen) return "Leave the race first.";
+    if (this.flightForm !== "flying")
+      return "Take off in the helicopter first.";
+    this.endDefense();
+    const size = this.worldSize();
+    const result = DefenseSession.create({
+      scene: this.scene,
+      combat: this.combat,
+      roads: this.plan.roads,
+      buildings: this.plan.buildings.filter(
+        (building) => !this.destroyedBuildings.has(building.sourceId),
+      ),
+      groundHeight: (x, z) => sampleTerrainPlan(this.plan.terrain, x, z),
+      // worldSize pads the selection by 40 m on every side.
+      bounds: {
+        centerX: size.centerX,
+        centerZ: size.centerZ,
+        halfWidth: size.width / 2 - 40,
+        halfDepth: size.depth / 2 - 40,
+      },
+      helicopter: () => {
+        if (this.flightForm !== "flying") return undefined;
+        const { x, y, z } = this.chassis.translation();
+        const velocity = this.flightState.velocity;
+        return {
+          position: new THREE.Vector3(x, y, z),
+          velocity: new THREE.Vector3(velocity.x, velocity.y, velocity.z),
+        };
+      },
+      onHelicopterHit: (health) => {
+        this.showFlightNotice(`Hit! Helicopter at ${health}%`, 1.2);
+        this.combat.addShake(0.4);
+      },
+      onHelicopterDestroyed: () => {
+        const { x, y, z } = this.chassis.translation();
+        this.combat.explode(new THREE.Vector3(x, y, z), 3);
+        this.revertToCar(true);
+      },
+      destroyBuilding: (sourceId, point) =>
+        this.destroyBuilding(sourceId, point),
+      overlayParent: this.container,
+    });
+    if (typeof result === "string") {
+      this.showFlightNotice(result);
+      return result;
+    }
+    this.defense = result;
+    // Compile the robot shaders now, during the countdown, not mid-wave.
+    const samples = result.prewarmObjects();
+    this.scene.add(samples);
+    this.renderer.compile(this.scene, this.camera);
+    this.scene.remove(samples);
+    (samples.userData.dispose as () => void)();
+    return undefined;
+  }
+
+  endDefense(): void {
+    this.defense?.dispose();
+    this.defense = undefined;
+  }
 
   /** Instantly returns to the car, e.g. before a race. */
   leaveHelicopter(): void {
@@ -2267,6 +2365,10 @@ export class WorldEngine {
       }
     }
     for (const rocket of [...this.combat.rockets]) {
+      if (this.defense?.rocketHit(rocket.position)) {
+        this.combat.removeRocket(rocket);
+        continue;
+      }
       if (rocket.homing) {
         const rival = this.steerMissile(rocket, dt);
         if (rival) {
@@ -2317,7 +2419,8 @@ export class WorldEngine {
     if (!sourceId && body)
       for (const [id, candidate] of this.customizationBodies)
         if (candidate.handle === body.handle) sourceId = id;
-    if (sourceId) this.destroyBuilding(sourceId, point);
+    // While defending, stray rockets must not flatten the neighbourhood.
+    if (sourceId && !this.defense) this.destroyBuilding(sourceId, point);
     else this.combat.explode(point, 1, point.distanceTo(this.camera.position));
   }
 
@@ -2631,6 +2734,7 @@ export class WorldEngine {
 
   private stepPhysics(): void {
     this.stepRockets(FIXED_STEP);
+    this.defense?.update(FIXED_STEP);
     if (this.flightForm !== "car") {
       this.stepHelicopter(FIXED_STEP);
       this.physics.step();
@@ -3393,6 +3497,7 @@ export class WorldEngine {
       destroyedBuildings: this.destroyedBuildings.size,
       ...(this.race ? { race: this.raceStats(this.race) } : {}),
       ...(this.flightForm !== "car" ? { flight: this.flightStats() } : {}),
+      ...(this.defense ? { defense: this.defense.stats() } : {}),
       ...(this.flightNotice && this.flightNotice.expiresAt > performance.now()
         ? { flightNotice: this.flightNotice.text }
         : {}),
@@ -3420,6 +3525,7 @@ export class WorldEngine {
     this.syncVehicle(deltaSeconds);
     this.combat.update(deltaSeconds);
     this.updateAimReticle();
+    this.defense?.updateOverlay(this.camera, this.viewWidth, this.viewHeight);
     if (this.mode !== "drive") this.controls.update();
     this.renderer.render(this.scene, this.camera);
     this.statsElapsed += deltaSeconds;
