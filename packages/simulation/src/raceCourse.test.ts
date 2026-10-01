@@ -15,6 +15,88 @@ const line = (id: string, points: Array<[number, number]>): RaceRoad => ({
 });
 
 describe("race course generation", () => {
+  it("generates multi-lap choices promptly on a densely sampled road", () => {
+    const road = line(
+      "dense",
+      Array.from({ length: 6_001 }, (_, index) => [index * 0.2, -32]),
+    );
+    const started = performance.now();
+    const candidates = generateRaceCourseCandidates(
+      [road],
+      { x: 0, z: -32 },
+      { x: 1, z: 0 },
+      { targetLength: 5_000 },
+    );
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates[0]!.length).toBeGreaterThanOrEqual(5_000);
+    // A generous regression ceiling: exhaustive path reconstruction and road
+    // scans used to take tens of seconds for this many samples.
+    expect(performance.now() - started).toBeLessThan(5_000);
+  });
+
+  it("preserves nearest widths and branch closures across spatial cell boundaries", () => {
+    const roads = [
+      {
+        ...line("crossing", [
+          [-200, -32],
+          [200, -32],
+        ]),
+        width: 5,
+      },
+      line("loop", [
+        [-64, -32],
+        [32, -32],
+        [32, 300],
+        [-64, 300],
+        [-64, -32],
+      ]),
+      line("branch", [
+        [32, -32],
+        [32, -180],
+      ]),
+    ];
+    const course = generateRaceCourse(
+      roads,
+      { x: 32, z: 40 },
+      { x: 0, z: 1 },
+      { minimumLength: 500 },
+    )!;
+    expect(course.kind).toBe("loop");
+    expect(course.barriers).toContainEqual({ x: 32, y: 0, z: -37, yaw: -0 });
+    const widths = course.points.map((point) => {
+      let nearest = Infinity;
+      let width = 5;
+      for (const road of roads) {
+        for (let index = 1; index < road.points.length; index += 1) {
+          const start = road.points[index - 1]!;
+          const end = road.points[index]!;
+          const dx = end.x - start.x;
+          const dz = end.z - start.z;
+          const ratio = Math.max(
+            0,
+            Math.min(
+              1,
+              ((point.x - start.x) * dx + (point.z - start.z) * dz) /
+                (dx * dx + dz * dz),
+            ),
+          );
+          const separation = Math.hypot(
+            point.x - start.x - ratio * dx,
+            point.z - start.z - ratio * dz,
+          );
+          if (separation < nearest) {
+            nearest = separation;
+            width = road.width;
+          }
+        }
+      }
+      return width;
+    });
+    expect(course.averageRoadWidth).toBe(
+      widths.reduce((sum, width) => sum + width, 0) / widths.length,
+    );
+  });
+
   it("prefers a connected loop that returns to the projected start", () => {
     const course = generateRaceCourse(
       [

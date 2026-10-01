@@ -202,6 +202,8 @@ export function WorldWorkspace({
   const [error, setError] = useState<string>();
   const [raceError, setRaceError] = useState<string>();
   const [racePreparing, setRacePreparing] = useState(false);
+  const [raceGenerating, setRaceGenerating] = useState(false);
+  const racePreviewRequestRef = useRef(0);
   const [raceSetupOpen, setRaceSetupOpen] = useState(false);
   const [raceLength, setRaceLength] = useState(1_000);
   const [raceDifficulty, setRaceDifficulty] =
@@ -451,6 +453,7 @@ export function WorldWorkspace({
       });
     return () => {
       cancelled = true;
+      racePreviewRequestRef.current += 1;
       controller.abort();
       updateAbortRef.current?.abort();
       enhancementAbortRef.current?.abort();
@@ -467,8 +470,13 @@ export function WorldWorkspace({
   useEffect(() => {
     engineRef.current?.setMode(mode);
     if (mode !== "drive") {
+      racePreviewRequestRef.current += 1;
       engineRef.current?.setRaceSetupOpen(false);
       setRaceSetupOpen(false);
+      setRaceGenerating(false);
+      setRacePreparing(false);
+      setRaceCandidates([]);
+      setSelectedRaceCourseId(undefined);
     }
   }, [mode]);
 
@@ -508,25 +516,64 @@ export function WorldWorkspace({
       );
     }
   };
-  const refreshRaceCandidates = (length: number, variation: number) => {
-    const candidates =
-      engineRef.current?.previewRaceCourses(length, variation) ?? [];
-    setRaceCandidates(candidates);
-    setSelectedRaceCourseId(candidates[0]?.id);
-    setRaceError(
-      candidates.length === 0
-        ? `No suitable ${(length / 1_000).toFixed(0)} km course starts from this road.`
-        : undefined,
-    );
+  const refreshRaceCandidates = async (length: number, variation: number) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const request = ++racePreviewRequestRef.current;
+    setRaceGenerating(true);
+    setRaceCandidates([]);
+    setSelectedRaceCourseId(undefined);
+    setRaceError(undefined);
+    try {
+      const candidates = await engine.previewRaceCourses(length, variation);
+      if (
+        engineRef.current !== engine ||
+        request !== racePreviewRequestRef.current
+      )
+        return;
+      setRaceCandidates(candidates);
+      setSelectedRaceCourseId(candidates[0]?.id);
+      setRaceError(
+        candidates.length === 0
+          ? `No suitable ${(length / 1_000).toFixed(0)} km course starts from this road.`
+          : undefined,
+      );
+    } catch (reason) {
+      if (
+        engineRef.current !== engine ||
+        request !== racePreviewRequestRef.current
+      )
+        return;
+      if (reason instanceof DOMException && reason.name === "AbortError")
+        return;
+      setRaceError(
+        reason instanceof Error
+          ? reason.message
+          : "The race courses could not be generated.",
+      );
+    } finally {
+      if (
+        engineRef.current === engine &&
+        request === racePreviewRequestRef.current
+      )
+        setRaceGenerating(false);
+    }
   };
   const openRaceSetup = () => {
     engineRef.current?.setRaceSetupOpen(true);
     setRaceSetupOpen(true);
-    refreshRaceCandidates(raceLength, raceVariation);
+    void refreshRaceCandidates(raceLength, raceVariation);
   };
   const closeRaceSetup = () => {
+    racePreviewRequestRef.current += 1;
+    engineRef.current?.cancelRace();
     engineRef.current?.setRaceSetupOpen(false);
     setRaceSetupOpen(false);
+    setRaceGenerating(false);
+    setRacePreparing(false);
+    setRaceCandidates([]);
+    setSelectedRaceCourseId(undefined);
+    setRaceError(undefined);
   };
   const toggleRace = () => {
     const engine = engineRef.current;
@@ -542,7 +589,9 @@ export function WorldWorkspace({
   };
   const beginRace = async () => {
     const engine = engineRef.current;
-    if (!engine || !selectedRaceCourseId) return;
+    if (!engine || !selectedRaceCourseId || raceGenerating || racePreparing)
+      return;
+    const request = racePreviewRequestRef.current;
     engine.prepareRaceAudio();
     recordedFinishRef.current = undefined;
     setRaceBestSeconds(undefined);
@@ -556,19 +605,29 @@ export function WorldWorkspace({
         difficulty: raceDifficulty,
         roadClosures: raceRoadClosures,
       });
-      if (engineRef.current === engine) {
+      if (
+        engineRef.current === engine &&
+        request === racePreviewRequestRef.current
+      ) {
         setRaceError(message);
         if (!message) setRaceSetupOpen(false);
       }
     } catch (reason) {
-      if (engineRef.current === engine)
+      if (
+        engineRef.current === engine &&
+        request === racePreviewRequestRef.current
+      )
         setRaceError(
           reason instanceof Error
             ? reason.message
             : "The race could not be prepared.",
         );
     } finally {
-      setRacePreparing(false);
+      if (
+        engineRef.current === engine &&
+        request === racePreviewRequestRef.current
+      )
+        setRacePreparing(false);
     }
   };
   const chooseAnotherRace = () => {
@@ -972,14 +1031,18 @@ export function WorldWorkspace({
               </button>
               <button
                 className={stats.race ? "race-cancel" : "race-start"}
-                disabled={racePreparing || Boolean(stats.defense)}
+                disabled={
+                  racePreparing || raceGenerating || Boolean(stats.defense)
+                }
                 onClick={toggleRace}
               >
-                {racePreparing
-                  ? "Loading racers…"
-                  : stats.race
-                    ? "Cancel race"
-                    : "Race"}
+                {raceGenerating
+                  ? "Finding routes…"
+                  : racePreparing
+                    ? "Loading racers…"
+                    : stats.race
+                      ? "Cancel race"
+                      : "Race"}
               </button>
               <button onClick={() => engineRef.current?.resetVehicle()}>
                 Reset car
@@ -1032,7 +1095,9 @@ export function WorldWorkspace({
               </label>
               <small>Active input: {stats.inputSource}</small>
             </details>
-            {raceError && <p className="race-error">{raceError}</p>}
+            {raceError && !raceSetupOpen && (
+              <p className="race-error">{raceError}</p>
+            )}
           </section>
           {engineReady &&
             engineRef.current &&
@@ -1058,7 +1123,11 @@ export function WorldWorkspace({
               />
             )}
           {raceSetupOpen && !stats.race && (
-            <section className="race-setup glass-panel" aria-label="Race setup">
+            <section
+              className="race-setup glass-panel"
+              aria-label="Race setup"
+              aria-busy={raceGenerating}
+            >
               <header>
                 <div>
                   <small>Race director</small>
@@ -1080,9 +1149,10 @@ export function WorldWorkspace({
                       className={raceLength === length ? "selected" : ""}
                       key={length}
                       type="button"
+                      disabled={racePreparing}
                       onClick={() => {
                         setRaceLength(length);
-                        refreshRaceCandidates(length, raceVariation);
+                        void refreshRaceCandidates(length, raceVariation);
                       }}
                     >
                       {length / 1_000} km
@@ -1113,6 +1183,12 @@ export function WorldWorkspace({
                   Close misleading junction exits
                 </label>
               </div>
+              {raceGenerating && <p role="status">Finding race courses…</p>}
+              {raceError && (
+                <p className="race-error" role="alert">
+                  {raceError}
+                </p>
+              )}
               <div className="race-course-list">
                 {raceCandidates.map((course) => (
                   <button
@@ -1143,10 +1219,11 @@ export function WorldWorkspace({
               <footer>
                 <button
                   type="button"
+                  disabled={racePreparing}
                   onClick={() => {
                     const variation = raceVariation + 1;
                     setRaceVariation(variation);
-                    refreshRaceCandidates(raceLength, variation);
+                    void refreshRaceCandidates(raceLength, variation);
                   }}
                 >
                   Regenerate routes
@@ -1154,7 +1231,9 @@ export function WorldWorkspace({
                 <button
                   className="race-launch"
                   type="button"
-                  disabled={!selectedRaceCourseId || racePreparing}
+                  disabled={
+                    !selectedRaceCourseId || raceGenerating || racePreparing
+                  }
                   onClick={() => void beginRace()}
                 >
                   {racePreparing ? "Loading racers…" : "Start race"}

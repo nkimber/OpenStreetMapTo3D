@@ -59,6 +59,91 @@ const coordinateKey = (point: RacePoint, layer: number) =>
 const planarDistance = (left: RacePoint, right: RacePoint) =>
   Math.hypot(right.x - left.x, right.z - left.z);
 
+const ROAD_CELL_SIZE = 32;
+const cellKey = (x: number, z: number) => `${x}:${z}`;
+const pointKey = (point: RacePoint) => `${point.x}:${point.z}`;
+
+interface RoadSegment {
+  start: RacePoint;
+  end: RacePoint;
+  width: number;
+  order: number;
+}
+
+interface IndexedRoadPoint {
+  point: RacePoint;
+  neighbors: RacePoint[];
+  order: number;
+}
+
+interface RoadContext {
+  roads: RaceRoad[];
+  graph: Graph;
+  segments: Map<string, RoadSegment[]>;
+  points: Map<string, IndexedRoadPoint[]>;
+  degrees: Map<string, Set<string>>;
+  widths: Map<string, number>;
+}
+
+function prepareRoads(roads: RaceRoad[]): RoadContext {
+  const context: RoadContext = {
+    roads,
+    graph: buildGraph(roads),
+    segments: new Map(),
+    points: new Map(),
+    degrees: new Map(),
+    widths: new Map(),
+  };
+  let order = 0;
+  for (const road of roads) {
+    road.points.forEach((point, index) => {
+      const key = cellKey(
+        Math.floor(point.x / ROAD_CELL_SIZE),
+        Math.floor(point.z / ROAD_CELL_SIZE),
+      );
+      const entries = context.points.get(key) ?? [];
+      entries.push({
+        point,
+        neighbors: [road.points[index - 1], road.points[index + 1]].filter(
+          (neighbor): neighbor is RacePoint => Boolean(neighbor),
+        ),
+        order: order++,
+      });
+      context.points.set(key, entries);
+      const end = road.points[index + 1];
+      if (!end) return;
+      const segment = { start: point, end, width: road.width, order };
+      // Index the full segment bounds, including cell edges. Route samples
+      // can then find their road width without scanning the entire world.
+      for (
+        let x = Math.floor(Math.min(point.x, end.x) / ROAD_CELL_SIZE);
+        x <= Math.floor(Math.max(point.x, end.x) / ROAD_CELL_SIZE);
+        x += 1
+      ) {
+        for (
+          let z = Math.floor(Math.min(point.z, end.z) / ROAD_CELL_SIZE);
+          z <= Math.floor(Math.max(point.z, end.z) / ROAD_CELL_SIZE);
+          z += 1
+        ) {
+          const cell = cellKey(x, z);
+          const segments = context.segments.get(cell) ?? [];
+          segments.push(segment);
+          context.segments.set(cell, segments);
+        }
+      }
+      const leftKey = `${Math.round(point.x)}:${Math.round(point.z)}`;
+      const rightKey = `${Math.round(end.x)}:${Math.round(end.z)}`;
+      const leftNeighbors = context.degrees.get(leftKey) ?? new Set<string>();
+      const rightNeighbors = context.degrees.get(rightKey) ?? new Set<string>();
+      leftNeighbors.add(rightKey);
+      rightNeighbors.add(leftKey);
+      context.degrees.set(leftKey, leftNeighbors);
+      context.degrees.set(rightKey, rightNeighbors);
+    });
+  }
+  return context;
+}
+
 function buildGraph(roads: RaceRoad[]): Graph {
   const graph: Graph = { points: new Map(), neighbors: new Map() };
   const addEdge = (from: string, to: string, length: number) => {
@@ -188,7 +273,7 @@ function shortestPath(
   start: string,
   goal?: string,
   excluded?: { from: string; to: string },
-): { paths: Map<string, PathResult>; farthest?: PathResult } {
+): PathResult | undefined {
   const distances = new Map<string, number>([[start, 0]]);
   const previous = new Map<string, string>();
   const pending = new MinQueue();
@@ -214,23 +299,29 @@ function shortestPath(
     }
   }
 
-  const paths = new Map<string, PathResult>();
-  let farthest: PathResult | undefined;
+  // Keep predecessor links during the search, then reconstruct only the path
+  // we need. Materializing every reachable path costs quadratic time/memory
+  // on long, densely sampled roads.
+  let destination = goal;
+  let farthestDistance = -1;
   for (const [key, distance] of distances) {
-    const keys = [key];
-    let cursor = key;
-    while (cursor !== start) {
-      const prior = previous.get(cursor);
-      if (!prior) break;
-      keys.push(prior);
-      cursor = prior;
+    if (!goal && distance > farthestDistance) {
+      destination = key;
+      farthestDistance = distance;
     }
-    keys.reverse();
-    const path = { distance, keys };
-    paths.set(key, path);
-    if (!farthest || distance > farthest.distance) farthest = path;
   }
-  return farthest ? { paths, farthest } : { paths };
+  if (!destination) return undefined;
+  const distance = distances.get(destination);
+  if (distance === undefined) return undefined;
+  const keys = [destination];
+  let cursor = destination;
+  while (cursor !== start) {
+    const prior = previous.get(cursor);
+    if (!prior) return undefined;
+    keys.push(prior);
+    cursor = prior;
+  }
+  return { distance, keys: keys.reverse() };
 }
 
 function pathPoints(graph: Graph, keys: string[]): RacePoint[] {
@@ -361,44 +452,85 @@ function turnDistances(points: RacePoint[], distances: number[]): number[] {
   return turns;
 }
 
-function nearestRoadWidth(roads: RaceRoad[], point: RacePoint): number {
+function nearestRoadWidth(context: RoadContext, point: RacePoint): number {
+  const key = pointKey(point);
+  const cached = context.widths.get(key);
+  if (cached !== undefined) return cached;
   let bestWidth = 5;
   let bestDistance = Number.POSITIVE_INFINITY;
-  for (const road of roads) {
-    for (let index = 0; index < road.points.length - 1; index += 1) {
-      const start = road.points[index]!;
-      const end = road.points[index + 1]!;
-      const dx = end.x - start.x;
-      const dz = end.z - start.z;
-      const lengthSquared = dx * dx + dz * dz;
-      if (lengthSquared < 0.01) continue;
-      const ratio = Math.max(
-        0,
-        Math.min(
-          1,
-          ((point.x - start.x) * dx + (point.z - start.z) * dz) / lengthSquared,
-        ),
-      );
-      const distance = Math.hypot(
-        point.x - (start.x + dx * ratio),
-        point.z - (start.z + dz * ratio),
-      );
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestWidth = road.width;
-      }
+  const check = ({ start, end, width }: RoadSegment) => {
+    const dx = end.x - start.x;
+    const dz = end.z - start.z;
+    const lengthSquared = dx * dx + dz * dz;
+    if (lengthSquared < 0.01) return;
+    const ratio = Math.max(
+      0,
+      Math.min(
+        1,
+        ((point.x - start.x) * dx + (point.z - start.z) * dz) / lengthSquared,
+      ),
+    );
+    const distance = Math.hypot(
+      point.x - (start.x + dx * ratio),
+      point.z - (start.z + dz * ratio),
+    );
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestWidth = width;
+    }
+  };
+  const x = Math.floor(point.x / ROAD_CELL_SIZE);
+  const z = Math.floor(point.z / ROAD_CELL_SIZE);
+  const nearby = new Set<RoadSegment>();
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dz = -1; dz <= 1; dz += 1) {
+      for (const segment of context.segments.get(cellKey(x + dx, z + dz)) ?? [])
+        nearby.add(segment);
     }
   }
+  // Preserve input order when two road widths are equally close.
+  for (const segment of [...nearby].sort(
+    (left, right) => left.order - right.order,
+  ))
+    check(segment);
+  const distanceToCellEdge = Math.min(
+    point.x - (x - 1) * ROAD_CELL_SIZE,
+    (x + 2) * ROAD_CELL_SIZE - point.x,
+    point.z - (z - 1) * ROAD_CELL_SIZE,
+    (z + 2) * ROAD_CELL_SIZE - point.z,
+  );
+  if (bestDistance > distanceToCellEdge) {
+    // Preserve the exact nearest-segment behavior if rounding places a sample
+    // outside its road's cell, or if the sample is away from the road network.
+    bestDistance = Number.POSITIVE_INFINITY;
+    for (const road of context.roads) {
+      for (let index = 0; index < road.points.length - 1; index += 1)
+        check({
+          start: road.points[index]!,
+          end: road.points[index + 1]!,
+          width: road.width,
+          order: 0,
+        });
+    }
+  }
+  context.widths.set(key, bestWidth);
   return bestWidth;
 }
 
-function courseBarriers(roads: RaceRoad[], points: RacePoint[]): RaceBarrier[] {
+function courseBarriers(
+  context: RoadContext,
+  points: RacePoint[],
+): RaceBarrier[] {
   const barriers: RaceBarrier[] = [];
   const seen = new Set<string>();
+  const visitedTurns = new Set<string>();
   for (let routeIndex = 1; routeIndex < points.length - 1; routeIndex += 1) {
     const center = points[routeIndex]!;
     const previous = points[routeIndex - 1]!;
     const next = points[routeIndex + 1]!;
+    const turnKey = `${pointKey(previous)}|${pointKey(center)}|${pointKey(next)}`;
+    if (visitedTurns.has(turnKey)) continue;
+    visitedTurns.add(turnKey);
     const used = [previous, next].map((point) => {
       const length = Math.hypot(point.x - center.x, point.z - center.z) || 1;
       return {
@@ -407,14 +539,23 @@ function courseBarriers(roads: RaceRoad[], points: RacePoint[]): RaceBarrier[] {
       };
     });
     const branches: Array<{ point: RacePoint; neighbor: RacePoint }> = [];
-    for (const road of roads) {
-      road.points.forEach((point, index) => {
-        if (Math.hypot(point.x - center.x, point.z - center.z) > 0.8) return;
-        const before = road.points[index - 1];
-        const after = road.points[index + 1];
-        if (before) branches.push({ point, neighbor: before });
-        if (after) branches.push({ point, neighbor: after });
-      });
+    const nearby: IndexedRoadPoint[] = [];
+    for (
+      let x = Math.floor((center.x - 0.8) / ROAD_CELL_SIZE);
+      x <= Math.floor((center.x + 0.8) / ROAD_CELL_SIZE);
+      x += 1
+    ) {
+      for (
+        let z = Math.floor((center.z - 0.8) / ROAD_CELL_SIZE);
+        z <= Math.floor((center.z + 0.8) / ROAD_CELL_SIZE);
+        z += 1
+      )
+        nearby.push(...(context.points.get(cellKey(x, z)) ?? []));
+    }
+    nearby.sort((left, right) => left.order - right.order);
+    for (const { point, neighbors } of nearby) {
+      if (Math.hypot(point.x - center.x, point.z - center.z) > 0.8) continue;
+      for (const neighbor of neighbors) branches.push({ point, neighbor });
     }
     if (branches.length < 3) continue;
     for (const branch of branches) {
@@ -444,6 +585,7 @@ function courseBarriers(roads: RaceRoad[], points: RacePoint[]): RaceBarrier[] {
       if (!seen.has(key)) {
         seen.add(key);
         barriers.push(barrier);
+        if (barriers.length === 24) return barriers;
       }
     }
   }
@@ -451,7 +593,7 @@ function courseBarriers(roads: RaceRoad[], points: RacePoint[]): RaceBarrier[] {
 }
 
 function courseQuality(
-  roads: RaceRoad[],
+  context: RoadContext,
   points: RacePoint[],
   distances: number[],
   turns: number[],
@@ -466,7 +608,7 @@ function courseQuality(
     elevationGain += Math.max(0, rise);
     if (run > 0.1) maxGrade = Math.max(maxGrade, Math.abs(rise / run));
   }
-  const sampledWidths = points.map((point) => nearestRoadWidth(roads, point));
+  const sampledWidths = points.map((point) => nearestRoadWidth(context, point));
   const averageRoadWidth =
     sampledWidths.reduce((sum, width) => sum + width, 0) /
     Math.max(1, sampledWidths.length);
@@ -475,24 +617,9 @@ function courseQuality(
   ).size;
   const repetitionRatio = 1 - uniquePoints / Math.max(1, points.length);
   const junctionKeys = new Set<string>();
-  const degrees = new Map<string, Set<string>>();
-  for (const road of roads) {
-    for (let index = 0; index < road.points.length - 1; index += 1) {
-      const left = road.points[index]!;
-      const right = road.points[index + 1]!;
-      const leftKey = `${Math.round(left.x)}:${Math.round(left.z)}`;
-      const rightKey = `${Math.round(right.x)}:${Math.round(right.z)}`;
-      const leftNeighbors = degrees.get(leftKey) ?? new Set<string>();
-      const rightNeighbors = degrees.get(rightKey) ?? new Set<string>();
-      leftNeighbors.add(rightKey);
-      rightNeighbors.add(leftKey);
-      degrees.set(leftKey, leftNeighbors);
-      degrees.set(rightKey, rightNeighbors);
-    }
-  }
   for (const point of points) {
     const key = `${Math.round(point.x)}:${Math.round(point.z)}`;
-    if ((degrees.get(key)?.size ?? 0) >= 3) junctionKeys.add(key);
+    if ((context.degrees.get(key)?.size ?? 0) >= 3) junctionKeys.add(key);
   }
   const intersectionCount = junctionKeys.size;
   const turnVariety = Math.min(
@@ -539,7 +666,7 @@ function completeCourse(
   points: RacePoint[],
   roadWidth: number,
   checkpointSpacing: number,
-  roads: RaceRoad[],
+  context: RoadContext,
   laps = 1,
   lapLength = routeDistances(points).at(-1) ?? 0,
 ): RaceCourse {
@@ -564,8 +691,8 @@ function completeCourse(
     turnDistances: turns,
     laps,
     lapLength,
-    ...courseQuality(roads, points, distances, turns),
-    barriers: courseBarriers(roads, points),
+    ...courseQuality(context, points, distances, turns),
+    barriers: courseBarriers(context, points),
   };
 }
 
@@ -580,17 +707,26 @@ export function generateRaceCourse(
   heading: Pick<RacePoint, "x" | "z">,
   options: GenerateRaceCourseOptions = {},
 ): RaceCourse | undefined {
+  return generateCourse(prepareRoads(roads), start, heading, options);
+}
+
+function generateCourse(
+  context: RoadContext,
+  start: Pick<RacePoint, "x" | "z">,
+  heading: Pick<RacePoint, "x" | "z">,
+  options: GenerateRaceCourseOptions,
+): RaceCourse | undefined {
   const minimumLength = options.minimumLength ?? 1_000;
   const checkpointSpacing = options.checkpointSpacing ?? 125;
-  const graph = buildGraph(roads);
-  const edge = closestStartEdge(roads, start);
+  const graph = context.graph;
+  const edge = closestStartEdge(context.roads, start);
   if (!edge) return undefined;
   const [forward, backward] = orientEndpoints(graph, edge, heading);
 
   const loop = shortestPath(graph, forward, backward, {
     from: edge.from,
     to: edge.to,
-  }).paths.get(backward);
+  });
   if (loop) {
     const points = [
       edge.projection,
@@ -604,19 +740,14 @@ export function generateRaceCourse(
         points,
         edge.roadWidth,
         checkpointSpacing,
-        roads,
+        context,
       );
   }
 
   const excludedStartEdge = { from: edge.from, to: edge.to };
   const extendedSearch = (endpoint: string): PathResult | undefined => {
     const endpointPoint = graph.points.get(endpoint);
-    const search = shortestPath(
-      graph,
-      endpoint,
-      undefined,
-      excludedStartEdge,
-    ).farthest;
+    const search = shortestPath(graph, endpoint, undefined, excludedStartEdge);
     if (!endpointPoint || !search) return undefined;
     return {
       distance:
@@ -644,7 +775,7 @@ export function generateRaceCourse(
     points,
     edge.roadWidth,
     checkpointSpacing,
-    roads,
+    context,
   );
 }
 
@@ -655,7 +786,7 @@ export interface GenerateRaceCourseCandidatesOptions extends GenerateRaceCourseO
 
 function repeatCourse(
   course: RaceCourse,
-  roads: RaceRoad[],
+  context: RoadContext,
   targetLength: number,
   checkpointSpacing: number,
 ): RaceCourse {
@@ -669,7 +800,7 @@ function repeatCourse(
     points,
     course.roadWidth,
     checkpointSpacing,
-    roads,
+    context,
     laps,
     course.length,
   );
@@ -697,29 +828,35 @@ export function generateRaceCourseCandidates(
     roads,
     roads.filter((road) => road.width >= 5.5),
     roads.filter((road) => road.width >= 6.5),
-  ].filter((set) => set.length > 0);
+  ].filter(
+    (set, index, sets) =>
+      set.length > 0 && (index === 0 || set.length !== sets[index - 1]!.length),
+  );
   const candidates: RaceCourse[] = [];
   const signatures = new Set<string>();
   for (const roadSet of roadSets) {
+    const context = prepareRoads(roadSet);
+    const edge = closestStartEdge(roadSet, start);
+    if (!edge) continue;
+    const orientations = new Set<string>();
     for (const direction of headings) {
-      const generated = generateRaceCourse(roadSet, start, direction, {
+      // Four headings can only choose two orientations of the same start edge.
+      const orientation = orientEndpoints(context.graph, edge, direction)[0];
+      if (orientations.has(orientation)) continue;
+      orientations.add(orientation);
+      const generated = generateCourse(context, start, direction, {
         minimumLength: Math.min(1_000, targetLength),
         checkpointSpacing,
       });
       if (!generated) continue;
-      const course = repeatCourse(
-        generated,
-        roadSet,
-        targetLength,
-        checkpointSpacing,
-      );
-      const signature = course.points
-        .slice(0, Math.ceil(course.points.length / course.laps))
+      const signature = generated.points
         .map((point) => `${Math.round(point.x)}:${Math.round(point.z)}`)
         .join("|");
       if (signatures.has(signature)) continue;
       signatures.add(signature);
-      candidates.push(course);
+      candidates.push(
+        repeatCourse(generated, context, targetLength, checkpointSpacing),
+      );
     }
   }
   return candidates

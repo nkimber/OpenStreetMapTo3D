@@ -9,7 +9,6 @@ import { footprintSignature } from "@osm3d/contracts";
 import { localToWgs84, wgs84ToLocal } from "@osm3d/geo";
 import {
   defaultVehicleConfig,
-  generateRaceCourseCandidates,
   isVehiclePoseSafe,
   nearestRaceProgress,
   neutralVehicleInput,
@@ -40,6 +39,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { vehicleMapPose, type VehicleMapPose } from "./driveMapPose.js";
 import { WorldBuilderClient } from "./worldBuilder.js";
+import { RaceCourseBuilderClient } from "./raceCourseBuilder.js";
 import { TerrainRuntime } from "./terrainRuntime.js";
 import { createBuildingVisual } from "./buildingVisual.js";
 import { buildingCollider } from "./buildingPhysics.js";
@@ -526,6 +526,8 @@ export class WorldEngine {
   private garageOpen = false;
   private raceSetupOpen = false;
   private readonly raceCourseCandidates = new Map<string, RaceCourse>();
+  private readonly raceCourseBuilder = new RaceCourseBuilderClient();
+  private racePreviewRevision = 0;
   private readonly raceAudio = new RaceAudio();
   private readonly spawnPosition = new THREE.Vector3();
   private readonly spawnRotation = new THREE.Quaternion();
@@ -667,6 +669,7 @@ export class WorldEngine {
 
   setRaceSetupOpen(open: boolean): void {
     this.raceSetupOpen = open;
+    if (!open) this.cancelRacePreview();
     this.keys.clear();
     this.currentInput = { ...neutralVehicleInput };
     if (!open && this.mode === "drive") this.renderer.domElement.focus();
@@ -738,7 +741,10 @@ export class WorldEngine {
     if (mode !== "drive") this.endDefense();
     if (mode !== "drive" && this.flightForm !== "car") this.revertToCar(true);
     if (mode !== "drive") this.cancelRace();
-    if (mode !== "drive") this.raceSetupOpen = false;
+    if (mode !== "drive") {
+      this.raceSetupOpen = false;
+      this.cancelRacePreview();
+    }
     this.mode = mode;
     this.controls.enabled = mode !== "drive";
     this.refreshBuildingVisuals();
@@ -979,20 +985,36 @@ export class WorldEngine {
     this.unsafeElapsed = 0;
   }
 
-  previewRaceCourses(targetLength = 1_000, variation = 0): RaceCoursePreview[] {
+  private cancelRacePreview(): void {
+    this.racePreviewRevision += 1;
+    this.raceCourseBuilder.cancel();
+    this.raceCourseCandidates.clear();
+  }
+
+  async previewRaceCourses(
+    targetLength = 1_000,
+    variation = 0,
+  ): Promise<RaceCoursePreview[]> {
+    this.cancelRacePreview();
+    const revision = this.racePreviewRevision;
     const position = this.chassis.translation();
     const rotation = this.chassis.rotation();
     const heading = new THREE.Vector3(0, 0, -1).applyQuaternion(
       new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
     );
     heading.applyAxisAngle(new THREE.Vector3(0, 1, 0), variation * 0.37);
-    const courses = generateRaceCourseCandidates(
-      this.raceRoads(),
-      position,
-      heading,
-      { targetLength, candidateCount: 3 },
-    );
-    this.raceCourseCandidates.clear();
+    const courses = await this.raceCourseBuilder.build({
+      roads: this.raceRoads(),
+      start: { x: position.x, z: position.z },
+      heading: { x: heading.x, z: heading.z },
+      options: { targetLength, candidateCount: 3 },
+    });
+    if (
+      this.disposed ||
+      revision !== this.racePreviewRevision ||
+      this.mode !== "drive"
+    )
+      throw new DOMException("Route generation was cancelled.", "AbortError");
     return courses.map((course, index) => {
       const id = `${variation}-${index}-${Math.round(course.length)}-${course.qualityScore}`;
       this.raceCourseCandidates.set(id, course);
@@ -1035,12 +1057,21 @@ export class WorldEngine {
     let courseId = options.courseId;
     let course = courseId ? this.raceCourseCandidates.get(courseId) : undefined;
     if (!course) {
-      const preview = this.previewRaceCourses(options.targetLength ?? 1_000)[0];
+      const preview = (
+        await this.previewRaceCourses(options.targetLength ?? 1_000)
+      )[0];
       courseId = preview?.id;
       course = courseId ? this.raceCourseCandidates.get(courseId) : undefined;
     }
     if (!course || !courseId)
       return `This road network cannot support the selected ${((options.targetLength ?? 1_000) / 1_000).toFixed(0)} km race.`;
+
+    if (
+      this.disposed ||
+      revision !== this.raceLoadRevision ||
+      this.mode !== "drive"
+    )
+      return undefined;
 
     const rivalChoices = rivalVehicleChoices(this.vehicleChoice);
     const modelResults = await Promise.allSettled(
@@ -1193,6 +1224,7 @@ export class WorldEngine {
   }
 
   dispose(): void {
+    this.cancelRacePreview();
     this.cancelRace();
     this.raceAudio.dispose();
     if (this.roadSigns) disposeRoadSigns(this.roadSigns);
